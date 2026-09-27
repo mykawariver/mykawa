@@ -8,7 +8,7 @@
 |---|---|---|
 | 第1段（水系を描く） | `experiments.mini.gen_headward` | 動作確認済み（2026-09-27） |
 | 第2段（面を起こす） | `experiments.mini.solve` | 動作確認済み・既知の問題を修正（2026-09-27。下記「既知の問題」参照） |
-| 第3段（仕上げ） | `experiments.mini_finish.finish_micro` | 未検証 |
+| 第3段（仕上げ） | `experiments.mini_finish.finish_micro` | 動作確認済み（2026-09-27。下記「第3段」参照。「削るだけ」という主張に例外あり） |
 | 正準の入口 | `experiments.baseline.generate` | 未検証（凍結ゼロの再現に問題あり。下記「環境と既知の問題」参照） |
 
 ## 環境
@@ -213,6 +213,63 @@ u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 
 ---
 
-## 第3段
+## 第3段 — `finish_micro`（仕上げ）
 
-未検証。次の作業でここに追記する。
+```python
+def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
+                 rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=500,
+                 refresh=12, final_sigma=0.9, domain=None)
+```
+
+第2段が返す `u`（面）と第1段の `net`（1px の川）を受け取り、丘の斜面に細かい刻みを入れる。設計上の主張は一つだけ：
+
+> **この段は、削ることしかしない。しかも水の通り道に沿ってだけ。**
+
+主な引数:
+
+| 引数 | 意味 |
+|---|---|
+| `u` | 第2段の出力（面） |
+| `net` | 第1段の出力。どこを刻んでよいかの判断に使う |
+| `rng` | 乱数生成器。第1段で使ったものをそのまま引き継ぐ（新しく作り直さない） |
+| `spacing` | 刻みを入れる間隔（px）。この間隔より水の通り道から遠い場所が無くなるまで繰り返す |
+| `depth0` | 刻みの深さの上限 |
+| `final_sigma` | 最後にかける、ごく弱いぼかしの強さ |
+| `domain` | bool 配列。陸の形（省略すると長方形全面） |
+
+戻り値は `u` と同じ形の `float64` 配列。
+
+### 実験：第2段の出力2つをそのまま通す
+
+```python
+from experiments.mini import gen_headward, solve
+from experiments.mini_finish import finish_micro
+import numpy as np
+
+rng = np.random.default_rng(3)
+net, lab = gen_headward(rng, n=36, labels=True)
+u = solve(net, outlets=[(34, 18)], labels=lab)
+u_finished = finish_micro(u, net, rng)   # rng は gen_headward と同じものを渡す
+```
+
+![Stage 3, one outlet: the same blue elevation surface as stage 2, now with fine texture cut into the hillslopes.](images/stage3_single.png)
+![Stage 3 minus stage 2, one outlet: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_single_diff.png)
+
+同じことを、出口2つの地形にも行った。
+
+![Stage 3, two outlets: the two-outlet elevation surface from stage 2, now with fine texture cut into both hillslopes.](images/stage3_two.png)
+![Stage 3 minus stage 2, two outlets: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_two_diff.png)
+
+実際の値:
+
+| | 出口1つ | 出口2つ |
+|---|---|---|
+| 修正前 min / max / mean | 0.0000 / 1.0000 / 0.5190 | 0.0000 / 1.0000 / 0.4062 |
+| 修正後 min / max / mean | -0.0175 / 0.9912 / 0.4736 | -0.0350 / 0.9973 / 0.3851 |
+| 差分（第3段−第2段）min / max | -0.1305 / **+0.0456** | -0.1149 / **+0.0467** |
+
+**「削ることしかしない」に、実測では例外がある。** ほとんどのセルは低くなっている（平均が下がっている、差分マップも大半が青＝削れている）ので、設計の主張は概ね成り立っている。しかし、差分の最大値が両方の例で**正**になっている（+0.045、+0.047）。つまり、一部のセルは第2段の値より**高く**なっている。
+
+差分マップ（2枚目・4枚目）を見ると、赤い箇所は散発的で、川に近い場所にも見られる。原因として一番あり得るのは、最終段の「ごく弱いぼかし」（`final_sigma`）と、その前の「窪地の穴埋め」（`priority_flood`）。どちらも、削ったばかりの谷底を周囲の高い斜面と平均するため、部分的に押し上げる効果がある。これは`README` の下書きにも「そのぼかしには代償があります。川床を両岸と平均してしまうので、下流の方が高い区間ができる」と書かれていた、既知の設計上のトレードオフと一致する。**バグではなく、ぼかし・穴埋めの副作用として想定されている挙動**と見ているが、これ以上の切り分けはしていない。
+
+最小値も両方の例で第2段の全体最小（0.0、出口の高さ）を下回っている（-0.0175、-0.0350）。出口そのものの直近が、他の場所より深く削られた可能性がある。これも切り分けていない。
