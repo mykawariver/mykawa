@@ -45,13 +45,18 @@ def _blur(a, sigma, dom):
 
 
 def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
-                 rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=500,
+                 rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=None,
                  refresh=12, final_sigma=0.9, domain=None):
     """u (0..1), net (1-px channels) -> u with the hillslopes dissected.
 
     spacing: stop when no cell is farther than this from channel or cut.
-    depth of each cut = min(depth0, rel_frac * relief spanned by its path)."""
+    depth of each cut = min(depth0, rel_frac * relief spanned by its path).
+    max_cuts: the carve budget.  None (default) scales it with the map's
+    AREA, 500 cuts per 128x128 (36x36 -> 39), the same rule generate() uses;
+    pass an int to set it by hand."""
     H, W = u.shape
+    if max_cuts is None:
+        max_cuts = int(500 * (H * W) / (128 * 128))
     # ARBITRARY DOMAINS.  Nothing here is computed on the sea and
     # then thrown away: the blurs are normalised over land, the sea is drained
     # ground that no cut aims at, a streamline that reaches the coast has
@@ -123,8 +128,13 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
         # head sits mid-slope must fade in from zero, or the V appears out of
         # nowhere and reads as a computational error.  Real micro-relief is only legitimate where a process starts -- a crest.
         h0 = 0.3 if u[path[0]] > np.quantile(u, 0.70) else 0.0
+        # GRADE TO THE MOUTH: a gully bed cannot cut below the bed it drains
+        # into, so no cell of the course is cut below the z of the cell the
+        # path reaches (a channel, or an earlier cut).
+        zm = float(u[path[-1]])
         for j in range(L):
             dj = dfull * (h0 + (1.0 - h0) * (j + 1) / L)
+            dj = min(dj, max(float(u[path[j]]) - zm, 0.0))
             # a deeper gully is also a WIDER one: long parallel contour
             # bundles on the valley walls survive narrow slit cuts; only a cut wide
             # enough to reshape the wall breaks their similarity)
@@ -141,15 +151,25 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
     # moderate at the channels; without this fade it would peak AT the
     # channels, because every cut is deepest
     # and widest at its mouth.  A real river planes its own surroundings
-    # smooth, so the cuts are suppressed within ~3 px of the channels: the
-    # mouth melts tangentially into the floor (priority_flood below keeps the
-    # bed drainable).
+    # smooth, so the cuts are faded out over ~6 px of the channels (a stamp
+    # is up to ~3 px wide, so a shorter fade leaves a moat of full-depth
+    # stamps just beside the river): the mouth melts tangentially into the
+    # floor (priority_flood below keeps the bed drainable).
     dnet = ndi.distance_transform_edt(~band)
-    carve = carve * np.clip(dnet / 3.0, 0.0, 1.0)
+    carve = carve * np.clip(dnet / 6.0, 0.0, 1.0)
     # a light smoothing of the CUT (not the surface): the raw max-combined
     # stamps leave a scalloped bed whose contour crossings appear as a speckle
     # of tiny closed rings.
     out = u - _blur(carve, 1.0, dom)
+    # BASE LEVEL beside the river: within 4 px of a channel no cut may take
+    # the ground below the nearest channel cell (ground that was already
+    # lower keeps its own z).  Farther out the hillslope is left alone, so
+    # the micro-relief is untouched.  Without the three rules above and this
+    # one, the carve leaves ~58% of channel cells ABOVE the ground around
+    # them (real Kawauchi: 0.4%); with them, ~15% (the solve alone: ~14%).
+    _dn, (iyc, ixc) = ndi.distance_transform_edt(~np.asarray(net, bool),
+                                                 return_indices=True)
+    out = np.where(_dn <= 4, np.maximum(out, np.minimum(u, u[iyc, ixc])), out)
     # DEPOSITION.  The smoothing shallows each cut at its MOUTH (the
     # deepest point, averaged against the higher surroundings), which dams the
     # bed just upstream and leaves closed contours in the valleys (the
