@@ -74,8 +74,14 @@ SEQ_BLUE = LinearSegmentedColormap.from_list("seq_blue", [
 ])
 
 def plot_elev(u, net, title):
+    import matplotlib.patheffects as pe
     fig, ax = plt.subplots(figsize=(4.6, 4.2))
     im = ax.imshow(u, cmap=SEQ_BLUE, interpolation="nearest")
+    # 等高線: 36x36 でも角ばりはするが十分読める(2026-09-27 に確認)
+    cs = ax.contour(u, levels=np.linspace(0.05, 0.95, 10), colors="#fcfcfb",
+                     linewidths=0.7, alpha=0.9)
+    cs.set_path_effects([pe.Stroke(linewidth=1.6, foreground="#0b0b0b",
+                                    alpha=0.5), pe.Normal()])  # 濃い縁取りで視認性を上げる
     ry, rx = np.where(net)
     ax.scatter(rx, ry, s=1.5, c="#0b0b0b", alpha=0.55, linewidths=0)  # 川を重ねる
     ax.set_xticks([]); ax.set_yticks([])
@@ -85,6 +91,8 @@ def plot_elev(u, net, title):
 ```
 
 配色は `dataviz` スキル（バリデータ `validate_palette.js`）で検証済みのもの: 流域の色分け（青 `#2a78d6` / 橙 `#eb6834`）は色覚多様性のもとでも判別できる組み合わせとして確認した。標高は単一色（青）の連続カラーマップにしている。
+
+**等高線について（2026-09-27 追記）。** 36×36 という小さい格子でも、等高線を引いてみたところ十分読み取れたので、以下の第2段・第3段の標高図にはすべて等高線を追加した。谷（川）に向かって等高線が V字に食い込む、実際の地形図と同じ読み方ができる。
 
 ---
 
@@ -191,7 +199,7 @@ net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
 u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の出口は (n-2, n//2) = (34, 18)
 ```
 
-![Stage 2, one outlet: a smooth blue elevation surface, lightest near the outlet at the bottom and darkest at the far edges, with small dark dots marking the channel.](images/stage2_single.png)
+![Stage 2, one outlet: a smooth blue elevation surface with contour lines, lightest near the outlet at the bottom and darkest at the far edges, the contours forming a V that points upstream along the channel.](images/stage2_single.png)
 
 実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999991799、NaN 無し）。出口 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなる（濃い色）。川が1本しかない場合は、分水界（等距離の帯）が生まれる場所が無く、面全体がひとつの丘としてなだらかに盛り上がる。
 
@@ -207,7 +215,7 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 ```
 
-![Stage 2, two outlets: a blue elevation surface with two light troughs following the two channels, and a smooth ridge rising exactly halfway between them.](images/stage2_two.png)
+![Stage 2, two outlets: a blue elevation surface with contour lines, two light troughs following the two channels, and a smooth ridge rising exactly halfway between them.](images/stage2_two.png)
 
 実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999990007、NaN 無し）。出口の座標（`(35,12)` と `(18,35)`）の周辺で値が最も低くなっており、外側に向かって高くなっている。色の変化はなめらかで、丘の頂上が個々の川から等距離の場所に自然に現れている（ドラフトにあった「尾根は描いていない」という主張どおりの挙動）。
 
@@ -253,12 +261,12 @@ u = solve(net, outlets=[(34, 18)], labels=lab)
 u_finished = finish_micro(u, net, rng)   # rng は gen_headward と同じものを渡す
 ```
 
-![Stage 3, one outlet: the same blue elevation surface as stage 2, now with fine texture cut into the hillslopes.](images/stage3_single.png)
+![Stage 3, one outlet: the same blue elevation surface as stage 2 with contour lines, now with fine texture cut into the hillslopes.](images/stage3_single.png)
 ![Stage 3 minus stage 2, one outlet: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_single_diff.png)
 
 同じことを、出口2つの地形にも行った。
 
-![Stage 3, two outlets: the two-outlet elevation surface from stage 2, now with fine texture cut into both hillslopes.](images/stage3_two.png)
+![Stage 3, two outlets: the two-outlet elevation surface from stage 2 with contour lines, now with fine texture cut into both hillslopes.](images/stage3_two.png)
 ![Stage 3 minus stage 2, two outlets: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_two_diff.png)
 
 実際の値（2026-09-27、`finish_micro` の2回目の修正後に再実験）:
