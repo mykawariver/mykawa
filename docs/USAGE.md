@@ -269,6 +269,8 @@ u_finished = finish_micro(u, net, rng)   # rng は gen_headward と同じもの�
 ![Stage 3, two outlets: the two-outlet elevation surface from stage 2 with contour lines, now with fine texture cut into both hillslopes.](images/stage3_two.png)
 ![Stage 3 minus stage 2, two outlets: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_two_diff.png)
 
+**等高線の見た目が、第3段の存在理由をそのまま示している。** 第2段の等高線（前節の図）は角ばっている。谷（川）だけを固定して、あいだをポワソン方程式で滑らかに補間しているだけなので、格子の解像度がそのまま線の折れ方に出る。第3段の等高線は、同じ36×36の格子でも自然に見える。丘の斜面に細かい刻みを入れたことで、線の折れ方が地形らしい不規則さを持つようになったため。数値のうえでの主張（削るだけ、水の通り道に沿って）だけでなく、見た目の上でも「なぜこの段が要るか」が分かる一例になっている。
+
 実際の値（2026-09-27、`finish_micro` の2回目の修正後に再実験）:
 
 | | 出口1つ | 出口2つ |
