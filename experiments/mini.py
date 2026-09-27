@@ -584,8 +584,15 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
             # touch again through their floors and the Dirichlet band -- which
             # is what the surface actually sees -- is welded after all.
             floor = clip_to_own_basin(floor, labels)
-        dow = np.hypot(iy0 - iyo, ix0 - ixo) if floor_tilt else 0.0
-        zn = np.where(floor & ~band, zn_net[iyo, ixo] + float(floor_tilt) * dow, zn)
+        # The cone decides WHERE the floor is; its z comes from the NEAREST
+        # channel cell, not the cone's owner.  The owner is usually a wider,
+        # DOWNSTREAM trunk cell whose cone reaches up beside the channel, so
+        # the floor next to a channel cell would be painted lower than that
+        # cell and the river would sit on a step above its own floor
+        # (measured: ~10% of channel cells higher than their own cross-
+        # section; with the nearest cell's z, ~6%; real Kawauchi 1%).
+        dow = np.hypot(iy0 - iyn, ix0 - ixn) if floor_tilt else 0.0
+        zn = np.where(floor & ~band, zn_net[iyn, ixn] + float(floor_tilt) * dow, zn)
         band = band | floor
     z0 = np.zeros_like(band, bool)
     u = EL.solve_two_bones(band, zn, z0, np.zeros(band.shape),
