@@ -1,0 +1,9 @@
+# The whole dependency list.  No pins: the frozen-zero golden check
+# (python3 -m experiments.baseline --check) is bit-exact and was last verified
+# on numpy 2.4.6 / scipy 1.17.1 / scikit-image 0.26.0 / matplotlib 3.11.2
+# under Python 3.11.15.  If --check ever fails on a newer stack, that is
+# information worth an issue.
+numpy
+scipy
+scikit-image
+matplotlib
