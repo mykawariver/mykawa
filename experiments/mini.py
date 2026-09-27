@@ -447,11 +447,27 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
     FLOOR.  So the Dirichlet band is widened by channel accumulation (hydraulic
     geometry, width ~ acc^0.5), each floor
     cell pinned at its nearest channel cell's z: tributaries stay 1 px, the
-    trunk gets a flat bottom up to floor_px half-width."""
-    band = ndi.binary_dilation(hollow_heads(net, hollow_px))
+    trunk gets a flat bottom up to floor_px half-width.
+
+    THE LONG PROFILE IS MEASURED ON THE 1-PX NETWORK, NOT THE DILATED BAND.
+    Measuring s (distance-from-outlet) and acc over the dilated band let a
+    bend's own side cells shortcut past the channel's true, longer path; their
+    own tiny accumulation then integrates a different rise, so about half of
+    them came out LOWER than the channel cell right next to them (measured:
+    83-90% of channel cells had a lower non-channel neighbour among their own
+    8-neighbourhood, and only 0.1-2% were themselves the local minimum -- the
+    river was mostly not at the bottom of its own valley).  net_h has one
+    profile per stream; every wider cell -- the band's own 1-px margin as well
+    as the floor -- is instead PAINTED at its nearest net_h cell's z, the same
+    rule the floor already used.  Fixes it to 2-4 px undrained-at-the-channel
+    (the real-terrain level)."""
+    net_h = hollow_heads(net, hollow_px)
     # labels: the one thing stage 1 hands over besides the raster.
     # Without it the hollow welds neighbouring basins and the solver performs a
     # river capture the network never drew -- see basin_labels above.
+    if labels is not None:
+        net_h = clip_to_own_basin(net_h, labels)
+    band = ndi.binary_dilation(net_h)
     if labels is not None:
         band = clip_to_own_basin(band, labels)
     # THE DOMAIN RIDES IN ON THE SAME RASTER.  labels < 0 is the NA stage 1
@@ -472,12 +488,12 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
            else np.linspace(1, 0, H)[:, None] * np.ones((1, W)))
     if outlets is not None:
         # explicit outlets (e.g. the roots of edge-rooted trees), snapped to
-        # the nearest channel cell -- skeletonize may have shifted them a px
-        _, (iyb, ixb) = ndi.distance_transform_edt(~band, return_indices=True)
+        # the nearest 1-px channel cell -- skeletonize may have shifted them a px
+        _, (iyb, ixb) = ndi.distance_transform_edt(~net_h, return_indices=True)
         src = [(int(iyb[int(r), int(c)]), int(ixb[int(r), int(c)]))
                for (r, c) in outlets]
     else:
-        lab, nl = ndi.label(band, structure=np.ones((3, 3)))
+        lab, nl = ndi.label(net_h, structure=np.ones((3, 3)))
         outs = []
         for i in range(1, nl + 1):
             rr, cc = np.where(lab == i)
@@ -485,19 +501,25 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
             outs.append((int(cc[k]) / (W - 1), 1.0 - int(rr[k]) / (H - 1)))
         src = [(int(round((1 - y) * (H - 1))), int(round(x * (W - 1))))
                for (x, y) in outs]
-    cum, _ = skgraph.MCP_Geometric(np.where(band, 1.0, np.inf)).find_costs(src)
-    s = np.where(band, cum, np.inf)
-    acc = channel_accum(band, s)
-    zn = profile_slope_area(band, np.where(band, s, np.nan), acc,
-                            theta=theta, bow=bow)
-    zn = np.where(band, zn / (zn.max() or 1.0), 0.0)
+    cum, _ = skgraph.MCP_Geometric(np.where(net_h, 1.0, np.inf)).find_costs(src)
+    s = np.where(net_h, cum, np.inf)
+    acc = channel_accum(net_h, s)
+    zn_net = profile_slope_area(net_h, np.where(net_h, s, np.nan), acc,
+                                theta=theta, bow=bow)
+    zn_net = np.where(net_h, zn_net / (zn_net.max() or 1.0), 0.0)
     if cap_px:
         from experiments.harmonic import lipschitz_cap
-        zn = np.nan_to_num(lipschitz_cap(np.where(band, zn, np.nan), band,
-                                         cap_px), nan=0.0)
-        zn = enforce_downstream(zn, band, s)
-        zn = np.where(band, zn - zn[band].min(), 0.0)
-        zn = zn / (zn.max() or 1.0)
+        zn_net = np.nan_to_num(lipschitz_cap(np.where(net_h, zn_net, np.nan),
+                                             net_h, cap_px), nan=0.0)
+        zn_net = enforce_downstream(zn_net, net_h, s)
+        zn_net = np.where(net_h, zn_net - zn_net[net_h].min(), 0.0)
+        zn_net = zn_net / (zn_net.max() or 1.0)
+    # paint the band's own 1-px margin (band minus net_h) at its owner's z --
+    # exactly the rule the floor uses below, applied here to the dilation
+    # margin that used to get its own (wrong) profile.
+    _, (iyn, ixn) = ndi.distance_transform_edt(~net_h, return_indices=True)
+    zn = np.where(net_h, zn_net, zn_net[iyn, ixn])
+    zn = np.where(band, zn, 0.0)
     if floor_px:
         # acc_ref.  Normalising by
         # acc.max() makes the widest channel of ANY map exactly floor_px wide,
@@ -517,14 +539,14 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
         # cells, so sqrt(A/ACC_REF) ~ 0.04 there.  floor_mul = 1 is the frozen
         # behaviour; baseline's `floor` knob goes through floor_px.
         ref = acc.max() if acc_ref is None else float(acc_ref)
-        accn = np.where(band, acc / (ref or 1.0), 0.0)
-        hw = np.where(band, (1.0 + (floor_px - 1.0) * np.sqrt(accn))
+        accn = np.where(net_h, acc / (ref or 1.0), 0.0)
+        hw = np.where(net_h, (1.0 + (floor_px - 1.0) * np.sqrt(accn))
                       * float(floor_mul), 0.0)
         if cone:
-            floor, (iyo, ixo) = cone_floor(band, hw)
+            floor, (iyo, ixo) = cone_floor(net_h, hw)
         else:                       # nearest-channel rule
             do, (iyo, ixo) = ndi.distance_transform_edt(
-                ~band, return_indices=True)
+                ~net_h, return_indices=True)
             floor = do <= hw[iyo, ixo]
         # THE FLOOR MUST SLOPE TOWARDS ITS RIVER.  Pinning
         # every floor cell at exactly its channel's z makes the floor DEAD
@@ -546,7 +568,7 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
             # is what the surface actually sees -- is welded after all.
             floor = clip_to_own_basin(floor, labels)
         dow = np.hypot(iy0 - iyo, ix0 - ixo) if floor_tilt else 0.0
-        zn = np.where(floor & ~band, zn[iyo, ixo] + float(floor_tilt) * dow, zn)
+        zn = np.where(floor & ~band, zn_net[iyo, ixo] + float(floor_tilt) * dow, zn)
         band = band | floor
     z0 = np.zeros_like(band, bool)
     u = EL.solve_two_bones(band, zn, z0, np.zeros(band.shape),
