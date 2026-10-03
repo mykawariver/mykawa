@@ -142,7 +142,8 @@ def hydraulic_reach(shape, root_list):
 def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
              smooth=0.0, roots=0, concavity=0.0, n_roots=None, theta=None,
              shape=None, outlets=None, bow=0.0, stage="finish",
-             trend=None, trend_max=1.15, split_p=0.0, reseed=True):
+             trend=None, trend_max=1.15, split_p=0.0, reseed=True,
+             method="poisson"):
     """The canonical generator.  All knobs zero = the frozen baseline.
     Returns (u, net, meta): u in [0, relief_span], net the 1-px channels.
 
@@ -160,7 +161,10 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     The comparison against a real DEM is then not quite symmetric -- nature
     ran its own stage 3 on the real ground.  It is still the better of the two
     comparisons, because what stage 3 adds here has no counterpart in the real
-    terrain: it is inside the valley floors, not on the hillslopes."""
+    terrain: it is inside the valley floors, not on the hillslopes.
+
+    method: stage 2's solver, "poisson" (the zero) or "two_bones" (ridges
+    pinned too; see mini.solve)."""
     from experiments.mini import gen_headward, solve
     from experiments.mini_finish import finish_micro
     # concavity drives BOW, not theta (see the knob docs above and
@@ -220,7 +224,8 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     # (see mini.profile_slope_area).  Default 0 = frozen.
     u = solve(net, outlets=[(r, c) for (r, c, _) in root_list],
               floor_px=fpx, theta=theta, acc_ref=ACC_REF, bow=bow,
-              hollow_px=HOLLOW * ELL0 / 1.20 ** density, labels=net_labels)
+              hollow_px=HOLLOW * ELL0 / 1.20 ** density, labels=net_labels,
+              method=method)
     # smooth acts on finish_micro's OWN final gaussian, so both directions
     # are real (an extra blur applied afterwards could not go below zero).
     if stage == "solve":
