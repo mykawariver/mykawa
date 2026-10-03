@@ -409,8 +409,23 @@ def clip_to_own_basin(mask, labels, gap=1.5):
 
 def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
           outlets=None, acc_ref=None, bow=0.0, floor_mul=1.0, cone=True,
-          floor_tilt=0.0, hollow_px=0.0, labels=None):
-    """1-px net -> surface.  NO ridge pins.
+          floor_tilt=0.0, hollow_px=0.0, labels=None, method="poisson",
+          ridge_C=28.0, ridge_q=0.5, ridge_cap=3.0):
+    """1-px net -> surface.
+
+    method: how the ground between the valleys is raised.
+      "poisson"   (default, the frozen zero) -- only the valleys are pinned
+                  and nabla^2 u = -poisson lifts the hillslopes; the ridges
+                  are not drawn, they appear where the valleys leave room.
+      "two_bones" -- the ridges are pinned too, at
+                  z(nearest valley) + ridge_C * rank**ridge_q metres (rank =
+                  the drainage area [km2] where the two rivers a ridge
+                  separates meet; see experiments/ridges.py), capped at
+                  ridge_cap m per px, and the surface is harmonic between the
+                  two bones.  Reads as continuous crests on long maps (3 x 12
+                  km); on a 1.5 km square the ranks span too little and
+                  "poisson" is better.  `poisson` is ignored: with the ridges
+                  pinned it cannot lift the hillslope above them.
 
     The river profile.  Coloured by z, a real network reads as one distinctly
     low trunk with every branch warming upstream.  Plain geodesic arc length
@@ -594,9 +609,24 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
         dow = np.hypot(iy0 - iyn, ix0 - ixn) if floor_tilt else 0.0
         zn = np.where(floor & ~band, zn_net[iyn, ixn] + float(floor_tilt) * dow, zn)
         band = band | floor
-    z0 = np.zeros_like(band, bool)
-    u = EL.solve_two_bones(band, zn, z0, np.zeros(band.shape),
-                           poisson_f=poisson, domain=dom)
+    if method == "two_bones":
+        if dom is not None:
+            raise NotImplementedError("two_bones does not support a domain yet")
+        from experiments.ridges import ridge_bone, PX_M
+        # the valley bone in METRES: the channel rise is 1.08% of the map's
+        # long side (130 m over 12 km), so the ridge rule C * rank**q [m]
+        # has a scale to sit on
+        rise_m = 0.0108 * max(H, W) * PX_M
+        zb = np.where(band, zn, 0.0) * rise_m
+        R, h = ridge_bone(net_h, band, zb, C=ridge_C, q=ridge_q,
+                          cap_px=ridge_cap)
+        u = EL.solve_two_bones(band, zb, R, h, poisson_f=0.0)
+    elif method == "poisson":
+        z0 = np.zeros_like(band, bool)
+        u = EL.solve_two_bones(band, zn, z0, np.zeros(band.shape),
+                               poisson_f=poisson, domain=dom)
+    else:
+        raise ValueError(f"method must be 'poisson' or 'two_bones', not {method!r}")
     # nanmin/nanmax so the off-map NaNs do not poison the normalisation; with
     # no domain these are the plain min/max and the result is unchanged.
     lo, hi = np.nanmin(u), np.nanmax(u)
