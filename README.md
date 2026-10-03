@@ -1,27 +1,29 @@
+[日本語](README.ja.md)
+
 # mykawa
 
-## はじめに
+## Introduction
 
-いまや仮想空間はありふれたものになりました。コンピュータゲームの中では、自分の家を持ったり、外敵と戦ったり、商売を始めたりできます。家や外敵や商売は、初期のゲームに比べてずっとリアルで精緻になりました。では、それらを載せている地形のほうはどうでしょうか。
+Virtual worlds are everywhere now. In a video game you can own a house, fight enemies, or start a business. Houses, enemies and businesses have become far more realistic and detailed than in early games. But what about the land they sit on?
 
-ゲームをしていると、私はつい川に目が行きます。川は、コンピュータで扱うには手ごわい相手です。水が流れるということは、そこに高低差があるということ。でも川の勾配は緩やかで、何百メートルも進んでようやく数メートル下がる、といったわずかな差しかありません。そんな微妙な違いを限られたコンピュータのリソースで表すのは、簡単ではないし必要でもないのでしょう。
+When I play video games, my eyes keep going to the rivers. Rivers are a tough thing for computers. Water flows, so there must be a difference in height. But a river's slope is gentle: you go hundreds of meters and drop only a few. Showing such a small difference with limited computing resources is probably hard, and probably not needed either.
 
-それでも、川もリアルで精緻であってくれたら、私はうれしいです。ただの水たまりではなく流れが想像できる川があると、その世界に親しみがわきます。そこでこのプロジェクトを始めました。手間と計算を川だけに注いで、川のいろいろな表情を作り出したいのです。
+I fully understand the situation, however, I would be happy if rivers were realistic and detailed too. A river where you can imagine the flow, not just a strip of water, makes a world feel closer to me. So I started this project. I want to spend the effort and the computation only on rivers, and make rivers with many different faces.
 
-## いまできること
+## What it does now
 
-これまでに、最大で 3 km × 12 km ほどの範囲の地形を、1 ピクセル約 11.7 m の解像度で作っています。地形は 3 つの段階を経て生成されます。谷と尾根が作られます。
+So far I have made terrain up to about 3000 m × 12000 m, at about 11.7 m per pixel. In my setting, 128 pixels make 1.5 km. That is roughly a mile, and one pixel is about 38 ft. The terrain is made in three stages, which produce valleys and ridges.
 
-1. 川の網を描く
-2. 川を手がかりに地面の高さを起こす
-3. 斜面に細かな刻みを入れて仕上げる
+1. Draw the river network
+2. Raise the ground, using the rivers as a guide
+3. Finish by cutting fine detail into the hillslopes
 
-出力は標高の二次元配列です。一般的なグラフ作成ソフトを使えば、標高で色分けした地図を描いたり、そこに等高線を重ねたりできます。そうした使い方も紹介していきます。
+The output is a 2D array of elevations. With ordinary plotting software you can draw a map colored by elevation and lay contour lines over it. I will show how to do that, too.
 
-## もう少しだけ
+## One more thing
 
-いまの AI は、実在の人物と見分けのつかない写真を簡単に作れます。国土地理院の地図を大量に学習させれば、私が作ろうとしている地形も容易に出力されるでしょう。
+Today's AI can easily make photos of people that look real. If I trained it on a large number of maps from the Geospatial Information Authority of Japan, it would probably produce the kind of terrain I am trying to make, without much trouble.
 
-それでも私は、少しずつ規則を書き足して本物に近づけていくやり方を試してみます。その作業を通して、自然の複雑さを味わう目が養われると思うから。AI が描くのは大量の川を平均化した絵です。私は気づきをコードに反映させながら、生きた川に近づいていきたい。
+Even so, I want to try the other way: adding rules little by little and getting closer to the real thing. I think that work will sharpen my eye for the complexity of nature. What AI draws is a picture that averages away the character of countless rivers. I want to put what I find into code, and get closer to a living river.
 
-自分だけの川を持つ楽しみを、みなさんにお届けできたらうれしいです。
+I hope I can share with you the fun of shaping a river of your own and tasting it.
