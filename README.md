@@ -28,4 +28,14 @@ Today's AI can easily make photos of people that look real. If I trained it on a
 
 Even so, I want to try the other way: adding rules little by little and getting closer to the real thing. I think that work will sharpen my eye for the complexity of nature. What AI draws is a picture that averages away the character of countless rivers. I want to put what I find into code, and get closer to a living river.
 
+## Example
+
+As a minimal example, let's make terrain 36 × 36 pixels in size: about 420 m (roughly 1,400 ft) on each side, at about 11.7 m per pixel. Going through the three stages gives the following.
+
+| 1. Draw the river network | 2. Raise the ground, using the rivers as a guide | 3. Finish by cutting fine detail into the hillslopes |
+|:---:|:---:|:---:|
+| <img src="docs/images/stage1_single.png" width="240" alt="Stage 1: a blue river network on a white background, branching upward from an outlet on the bottom edge."> | <img src="docs/images/stage2_single.png" width="260" alt="Stage 2: an elevation map with contour lines. It is lowest near the outlet on the bottom edge and rises toward the edges. The contour lines bend into a V along the river."> | <img src="docs/images/stage3_single.png" width="260" alt="Stage 3: the same elevation map as stage 2, with fine detail cut into the hillslopes. The contour lines lose their angular look and take a natural shape."> |
+
+For details on how to make these, see [docs/USAGE.md](docs/USAGE.md) (in Japanese).
+
 I hope I can share with you the fun of shaping a river of your own and enjoying it.
