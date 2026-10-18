@@ -103,12 +103,12 @@ from experiments.mini import gen_headward, solve
 import numpy as np
 
 net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
-u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の流出点は (n-2, n//2) = (34, 18)
+u = solve(net, outlets=[(35, 18)], labels=lab)   # n=36 の既定の流出点は (n-1, n//2) = (35, 18)
 ```
 
 <img src="images/stage2_single.png" width="260" alt="第2段・流出点1つ：等高線入りの標高図。下辺の流出点付近が最も低く（明るい色）、縁に近づくほど高い（濃い色）。等高線は川に沿って上流に向かう V字を描く。">
 
-流出点 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなります（濃い色）。
+流出点 `(35, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなります（濃い色）。
 
 ### 例2：流出点を2つ置く（第1段・例2の続き）
 
@@ -160,7 +160,7 @@ import numpy as np
 
 rng = np.random.default_rng(3)
 net, lab = gen_headward(rng, n=36, labels=True)
-u = solve(net, outlets=[(34, 18)], labels=lab)
+u = solve(net, outlets=[(35, 18)], labels=lab)
 u_finished = finish_micro(u, net, rng)   # rng は gen_headward で使ったものをそのまま渡す
 ```
 
@@ -170,7 +170,7 @@ u_finished = finish_micro(u, net, rng)   # rng は gen_headward で使ったも�
 
 赤い部分があるのは、削ったあとにできた窪地を埋める処理と、最後にかける弱いぼかしによって、元より少し高くなる場所があるためです。
 
-実際の値は `u_finished.min()` = 0.0005、`u_finished.max()` = 0.9980 で、NaN はありません。第2段との差は −0.1047〜+0.0769 です。
+実際の値は `u_finished.min()` = 0.0023、`u_finished.max()` = 0.9979 で、NaN はありません。第2段との差は −0.0651〜+0.0403 です。
 
 ### 例2：流出点を2つ置く（第2段・例2の続き）
 

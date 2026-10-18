@@ -1017,7 +1017,7 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
         reach = budget0 * max(H, W)
     net = np.zeros((H, W), bool)
     if roots is None:
-        roots = [(H - 2, W // 2, -np.pi / 2)]
+        roots = [(H - 1, W // 2, -np.pi / 2)]
     # S = distance along the network from the outlet, recorded as each cell is
     # painted.  It is what the no-folding test compares across the plane.
     S = np.full((H, W), np.nan)
