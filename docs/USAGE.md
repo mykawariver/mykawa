@@ -27,18 +27,16 @@ def gen_headward(rng, n=128, ell=5.0, ..., roots=None, shape=None,
 |---|---|
 | `n` | 正方形の一辺（px）。`shape` を指定すると無視される |
 | `shape=(H, W)` | 長方形にしたい場合の大きさ |
-| `roots` | `(行, 列, 向き)` のリスト。水の出口（省略時は下辺中央に1つ） |
+| `roots` | `(行, 列, 向き)` のリスト。川の流出点。省略時は下辺中央に1つ。川を木に見立てているので変数名はrootsである。 |
 | `domain` | bool 配列。True が陸。省略すると長方形全面が陸になる |
 | `reserve` | bool 配列。川を生やしてはいけない場所 |
-| `labels` | **常に `True` を渡すこと。** 第2段 `solve` に渡す `lab` を得るために必要 |
+| `labels` | 常に `True` を渡す |
 
-戻り値（`labels=True` で呼んだ場合）:
+戻り値:
 
 `(net, lab)` のタプル。`net` は bool 配列で、川なら `True`。`lab` は int16 配列で、`-1` = 陸の外、`0` = 陸だが川ではない、`k > 0` = k 番目の出口に注ぐ川。
 
-標高はこの関数の入力に無い。地形を見て川を引いているのではなく、白紙に川を引いている。
-
-### 例1：出口1つ
+### 例1：デフォルトの流出点を使う。seed = 3。
 
 ```python
 import numpy as np
@@ -49,7 +47,7 @@ net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
 
 ![Stage 1, one outlet: a single branching blue channel network on a light background, growing from the bottom edge.](images/stage1_single.png)
 
-### 例2：出口を2つ置き、流域も返させる
+### 例2：流出点を2つ任意に置く。
 
 ```python
 roots = [(35, 12, -np.pi/2),   # 下辺  → 上へ遡る
@@ -57,15 +55,11 @@ roots = [(35, 12, -np.pi/2),   # 下辺  → 上へ遡る
 net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True)
 ```
 
-`roots` は `(行, 列, 向き)`。向きは水が流れる方ではなく、木が伸びる方＝上流方向。`lab` の実際の値は `{0, 1, 2}`。
+`roots` は `(行, 列, 向き)`。向きは水が流れる方ではなく、木が伸びる方＝上流方向。
+`roots`を二つ渡しているので、戻り値では`lab` が `{0, 1, 2}`をとる。川1と川2ができる。
 
 ![Stage 1, two outlets: two separate branching networks, one blue and one orange, that never touch each other.](images/stage1_two.png)
 
-流域1（青）と流域2（橙）が混ざらず、あいだに何も無い帯（＝分水界）ができている。この分け方を `lab` として第2段に渡す。
-
-**注記。** この結果は、同じシード・同じ引数で以前得られていた記録とほぼ同じ地形の骨格になったが、数ピクセル分だけ経路が異なった。前述の環境差（numpy/scipy のバージョン）が原因と見ているが、確認していない。
-
----
 
 ##
 この下は編集中です！！！
