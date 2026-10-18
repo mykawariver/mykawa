@@ -164,9 +164,9 @@ u = solve(net, outlets=[(34, 18)], labels=lab)
 u_finished = finish_micro(u, net, rng)   # rng は gen_headward で使ったものをそのまま渡す
 ```
 
-<img src="images/stage3_single.png" width="260" alt="第3段・流出点1つ：第2段と同じ標高図に、斜面の細かな刻みが加わっている。等高線の角ばりが取れて自然な形になっている。"> <img src="images/stage3_single_diff.png" width="260" alt="第3段と第2段の差・流出点1つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
+<img src="images/stage2_single.png" width="220" alt="第2段・流出点1つ：仕上げ前の標高図。等高線が角ばっている。"> <img src="images/stage3_single.png" width="220" alt="第3段・流出点1つ：第2段と同じ標高図に、斜面の細かな刻みが加わっている。等高線の角ばりが取れて自然な形になっている。"> <img src="images/stage3_single_diff.png" width="220" alt="第3段と第2段の差・流出点1つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
 
-左が第3段の標高図、右が第3段と第2段の差です。差の図では、青が削られて低くなった場所、赤が高くなった場所を表します。第2段の図と比べると、角ばっていた等高線が自然な形になっているのが分かります。
+左から、第2段の標高図（仕上げ前）、第3段の標高図（仕上げ後）、第3段と第2段の差です。差の図では、青が削られて低くなった場所、赤が高くなった場所を表します。左の2枚を比べると、角ばっていた等高線が自然な形になっているのが分かります。
 
 赤い部分があるのは、削ったあとにできた窪地を埋める処理と、最後にかける弱いぼかしによって、元より少し高くなる場所があるためです。
 
@@ -187,7 +187,7 @@ u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 u_finished = finish_micro(u, net, rng)
 ```
 
-<img src="images/stage3_two.png" width="260" alt="第3段・流出点2つ：第2段の標高図に、両側の斜面の細かな刻みが加わっている。"> <img src="images/stage3_two_diff.png" width="260" alt="第3段と第2段の差・流出点2つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
+<img src="images/stage2_two.png" width="220" alt="第2段・流出点2つ：仕上げ前の標高図。等高線が角ばっている。"> <img src="images/stage3_two.png" width="220" alt="第3段・流出点2つ：第2段の標高図に、両側の斜面の細かな刻みが加わっている。"> <img src="images/stage3_two_diff.png" width="220" alt="第3段と第2段の差・流出点2つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
 
 実際の値は `u_finished.min()` = 0.0042、`u_finished.max()` = 0.9973 で、NaN はありません。第2段との差は −0.0750〜+0.0872 です。
 
