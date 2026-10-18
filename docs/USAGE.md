@@ -134,26 +134,24 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
                  refresh=12, final_sigma=0.9, domain=None)
 ```
 
-第2段が返す `u`（面）と第1段の `net`（1px の川）を受け取り、丘の斜面に細かい刻みを入れる。これにより地形に複雑さが加わり自然な造形に近づく。
+第2段が返す `u`（標高）と第1段の `net`（1 px の川）を受け取り、丘の斜面に細かい刻みを入れます。これにより地形に複雑さが加わり、自然な造形に近づきます。
 
 主な引数:
 
 | 引数 | 意味 |
 |---|---|
-| `u` | 第2段の出力（面） |
+| `u` | 第2段の出力（標高の二次元配列） |
 | `net` | 第1段の出力。どこを刻んでよいかの判断に使う |
-| `rng` | 乱数生成器。第1段で使ったものをそのまま使う |
-| `spacing` | 刻みを入れる間隔（px）。この間隔より水の通り道から遠い場所が無くなるまで繰り返す |
-| `depth0` | 刻みの深さの上限 |
-| `max_cuts` | 削る回数の上限。既定 `None` は地図の面積に比例して決める（`generate()` と同じ規則。128×128 で500、36×36 なら約39） |
-| `final_sigma` | 最後にかける、ごく弱いぼかしの強さ |
-| `domain` | bool 配列。陸の形（省略すると長方形全面） |
+| `rng` | 乱数生成器。第1段で使ったものを、作り直さずにそのまま渡す |
+| `spacing` | 既定は 3。刻みを入れる間隔（px）。川や刻みからこの距離より離れた場所が無くなるまで、刻みを入れ続ける |
+| `depth0` | 既定は 0.13。刻み1本の深さの上限（正規化した標高の単位） |
+| `max_cuts` | 刻みを入れる回数の上限。既定の `None` では地図の面積に比例して決まる（128×128 で 500、36×36 で 39） |
+| `final_sigma` | 既定は 0.9。最後にかける、ごく弱いぼかしの強さ |
+| `domain` | bool 配列。陸の形。省略すると長方形全面が陸になる |
 
-戻り値は `u` と同じ形の `float64` 配列。
+戻り値は `u` と同じ形の `float64` 配列です。
 
-Hi Claude, この下を今までとフォーマットにして！
-
-### 実験：第2段の出力2つをそのまま通す
+### 例1：流出点を既定のままにする（第2段・例1の続き）
 
 ```python
 from experiments.mini import gen_headward, solve
@@ -163,21 +161,35 @@ import numpy as np
 rng = np.random.default_rng(3)
 net, lab = gen_headward(rng, n=36, labels=True)
 u = solve(net, outlets=[(34, 18)], labels=lab)
-u_finished = finish_micro(u, net, rng)   # rng は gen_headward と同じものを渡す
+u_finished = finish_micro(u, net, rng)   # rng は gen_headward で使ったものをそのまま渡す
 ```
 
-![Stage 3, one outlet: the same blue elevation surface as stage 2 with contour lines, now with fine texture cut into the hillslopes.](images/stage3_single.png)
-![Stage 3 minus stage 2, one outlet: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_single_diff.png)
+<img src="images/stage3_single.png" width="260" alt="第3段・流出点1つ：第2段と同じ標高図に、斜面の細かな刻みが加わっている。等高線の角ばりが取れて自然な形になっている。"> <img src="images/stage3_single_diff.png" width="260" alt="第3段と第2段の差・流出点1つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
 
-同じことを、出口2つの地形にも行った。
+左が第3段の標高図、右が第3段と第2段の差です。差の図では、青が削られて低くなった場所、赤が高くなった場所を表します。第2段の図と比べると、角ばっていた等高線が自然な形になっているのが分かります。
 
-![Stage 3, two outlets: the two-outlet elevation surface from stage 2 with contour lines, now with fine texture cut into both hillslopes.](images/stage3_two.png)
-![Stage 3 minus stage 2, two outlets: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_two_diff.png)
+赤い部分があるのは、削ったあとにできた窪地を埋める処理と、最後にかける弱いぼかしによって、元より少し高くなる場所があるためです。
 
+実際の値は `u_finished.min()` = 0.0005、`u_finished.max()` = 0.9980 で、NaN はありません。第2段との差は −0.1047〜+0.0769 です。
 
+### 例2：流出点を2つ置く（第2段・例2の続き）
 
+```python
+from experiments.mini import gen_headward, solve
+from experiments.mini_finish import finish_micro
+import numpy as np
 
+roots = [(35, 12, -np.pi/2),
+         (18, 35,  np.pi)]
+rng = np.random.default_rng(5)
+net, lab = gen_headward(rng, n=36, roots=roots, labels=True)
+u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
+u_finished = finish_micro(u, net, rng)
+```
 
+<img src="images/stage3_two.png" width="260" alt="第3段・流出点2つ：第2段の標高図に、両側の斜面の細かな刻みが加わっている。"> <img src="images/stage3_two_diff.png" width="260" alt="第3段と第2段の差・流出点2つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
+
+実際の値は `u_finished.min()` = 0.0042、`u_finished.max()` = 0.9973 で、NaN はありません。第2段との差は −0.0750〜+0.0872 です。
 
 
 ##
