@@ -78,7 +78,7 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 ```python
 def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
           outlets=None, acc_ref=None, bow=0.0, floor_mul=1.0, cone=True,
-          floor_tilt=0.0, hollow_px=0.0, labels=None)
+          floor_tilt=0.0, hollow_px=0.0, labels=None, ...)
 ```
 
 第1段が出力する `net`（川のセルが `True` になっている bool 配列）を入力として、標高を割り当てた二次元配列を出力します。
@@ -88,8 +88,8 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
 | 引数 | 意味 |
 |---|---|
 | `net` | 第1段の出力（bool 配列） |
-| `outlets` | `(行, 列)` のリスト。第1段で使った `roots` の座標をそのまま渡す |
-| `labels` | 第1段から受け取った `lab` をそのまま渡す |
+| `outlets` | `(行, 列)` のリスト。第1段で使った `roots` の座標をそのまま渡す。省略すると、川の網ごとに最も下辺に近い点を流出点とみなす。そのため、`roots` を省略した場合は省略してもよいが、流出点を自分で置いた場合は必ず渡す |
+| `labels` | 必ず渡す。第1段から受け取った `lab` をそのまま渡す。省略すると、流域をまたいで谷底が広がるのを防ぐ処理が働かない |
 | `theta` | 既定は 0.3。川の縦断形の凹み具合（Flint の法則の指数） |
 | `poisson` | 既定は 0.006。丘を下から押し上げる強さ。0 だと谷のあいだの面は単なる調和補間（膜を張っただけ）になり、丘が川の高さを超えられない |
 | `floor_px` | 既定は 4。谷底の幅の半分（px）の上限。本流ほど谷底が広くなり、支流は 1 px のまま |
