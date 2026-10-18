@@ -73,6 +73,59 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 <img src="images/stage1_two.png" width="240" alt="第1段・流出点2つ：青と橙の2つの川の網が、互いに交わらずに枝分かれしている。">
 
 
+## 第2段 — `solve`（川を手がかりに地面の高さを起こす）
+
+```python
+def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
+          outlets=None, acc_ref=None, bow=0.0, floor_mul=1.0, cone=True,
+          floor_tilt=0.0, hollow_px=0.0, labels=None)
+```
+
+第1段が出力する `net`川のセルが `True` になっているbool配列を入力として使い、標高を含む二次元配列を出力する。
+
+主な引数:
+
+| 引数 | 意味 |
+|---|---|
+| `net` | 第1段の出力（bool 配列） |
+| `outlets` | `(行, 列)` のリスト。第1段で使った `roots` の座標をそのまま渡す |
+| `labels` | 第1段から受け取った `lab` をそのまま渡す |
+| `theta` | 既定は0.3。川の縦断形状の凹み具合（Flint の法則の指数） |
+| `poisson` | 既定は0.006。丘を下から押し上げる強さ。0 だと谷の間の面は単なる調和補間（膜を張っただけ）になり、丘が川の高さを超えられない |
+| `floor_px` | 既定は4。谷底の幅 |
+
+戻り値は `float64` の2次元配列（`net` と同じ形）。値は `[0, 1]` に正規化されている。`0` が最も低い（出口の高さ）。
+
+### 例1：流出点を既定のままにする（seed = 3）（第1段の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+import numpy as np
+
+net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
+u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の出口は (n-2, n//2) = (34, 18)
+```
+
+![Stage 2, one outlet: a smooth blue elevation surface with contour lines, lightest near the outlet at the bottom and darkest at the far edges, the contours forming a V that points upstream along the channel.](images/stage2_single.png)
+
+実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999991799、NaN 無し）。出口 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなる（濃い色）。
+
+### 例2：流出点を2つ置く（seed = 5）（第2段の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+import numpy as np
+
+roots = [(35, 12, -np.pi/2),
+         (18, 35,  np.pi)]
+net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True)
+u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
+```
+
+![Stage 2, two outlets: a blue elevation surface with contour lines, two light troughs following the two channels, and a smooth ridge rising exactly halfway between them.](images/stage2_two.png)
+
+実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999990007、NaN 無し）。出口の座標（`(35,12)` と `(18,35)`）の周辺で値が最も低くなっており、外側に向かって高くなっている。
+
 ##
 この下は編集中です！！！
 
