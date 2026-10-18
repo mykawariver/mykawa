@@ -326,6 +326,47 @@ def profile_slope_area(band, s, acc, theta=0.5, bow=0.0):
     return z
 
 
+def rejoin_after_thinning(raw, skel, roots):
+    """Undo what skeletonize may cut: links between channels, and outlets.
+
+    Thinning is meant to preserve connectivity, but nothing here relies on
+    that: every connected piece of the raw network must come out as ONE
+    piece, or a trunk could be cut off from its outlet.  And an outlet cell
+    that is the corner of an L can be thinned away (6% of outlets at n=36
+    and n=128, seeds 1-60), leaving the river short of the map edge it
+    drains through.  Both are repaired the same way: by the shortest path
+    along the RAW network, so nothing is drawn that growth did not draw."""
+    skel = np.asarray(skel, bool).copy()
+    raw = np.asarray(raw, bool)
+    cost = np.where(raw, 1.0, np.inf)
+    s8 = np.ones((3, 3))
+
+    def link(src, dst):
+        mcp = skgraph.MCP_Geometric(cost)
+        cum, _ = mcp.find_costs(list(zip(*np.where(src))))
+        d = np.where(dst, cum, np.inf)
+        end = np.unravel_index(int(np.argmin(d)), d.shape)
+        if np.isfinite(d[end]):
+            for (r, c) in mcp.traceback(end):
+                skel[r, c] = True
+
+    lab, nl = ndi.label(raw, structure=s8)
+    for i in range(1, nl + 1):
+        comp = lab == i
+        while True:
+            pieces, k = ndi.label(skel & comp, structure=s8)
+            if k <= 1:
+                break
+            link(pieces == 1, pieces > 1)
+    for rc in roots:
+        r, c = int(rc[0]), int(rc[1])
+        if raw[r, c] and not skel[r, c]:
+            src = np.zeros_like(skel)
+            src[r, c] = True
+            link(src, skel & (lab == lab[r, c]))
+    return skel
+
+
 def basin_labels(net, roots, domain=None):
     """Which OUTLET each channel cell belongs to, as an int raster (0 = none).
 
@@ -1274,7 +1315,7 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
         else:
             push((r, c, a, run, lrun, bud, sd))
     _FOLD[1] = S.copy(); _FOLD[2] = net.copy()
-    skel = skmo.skeletonize(net)
+    skel = rejoin_after_thinning(net, skmo.skeletonize(net), roots)
     # labels=True adds the basin raster to the return.  It is the WHOLE of
     # the stage1 -> stage2 contract; everything else stage 2 needs
     # it still derives for itself.  Default False keeps every other caller on
