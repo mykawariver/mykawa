@@ -49,7 +49,7 @@ KNOBS (zero = frozen state):
               fine-scale control.
     floor     valley-bottom width: floor_px = 1.0 + 3.0 * 1.75**floor, i.e.
               the knob multiplies the sqrt(A) TERM of the half-width law
-              hw = 1 + (floor_px - 1) * sqrt(A / ACC_REF), leaving the 1 px
+              hw = 1 + (floor_px - 1) * sqrt(A / A_trunk), leaving the 1 px
               minimum -- the channel itself -- alone.  The term it scales is
               the prefactor of the measured law W ~ A**0.49 (real transects:
               W(A=1e4) = 24..110 m, 4.6x).  Scaling the WHOLE width would also
@@ -75,9 +75,8 @@ SCALE CONTRACT:
     dimensionless multipliers on those quantities, so they are independent of
     canvas size.  Three quantities DO scale with the map (handled below): the
     number of edge outlets (per perimeter), the carve budget (per area) and
-    the VALLEY FLOOR WIDTH, which follows W ~ A^0.49 from the absolute
-    drainage area (ACC_REF): the trunk is ~216 m wide at 1.5 km, 281 m at
-    3 km, 377 m at 5 km.
+    the VALLEY FLOOR WIDTH, which follows W ~ A^0.49 relative to the map's
+    own trunk accumulation (A_trunk; solve's acc_ref=None).
     Tributary density is constant with map size (ell is in pixels), as within
     one physiographic region in real terrain.  Hillslope relief is also
     unchanged with map size (0.133 at n=128, 0.143 at n=256) because outlets
@@ -99,22 +98,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 N = 128
 RELIEF = 0.66
 # trunk accumulation of the calibration map (median over seeds 1-5 at n=128).
-# Fixing it makes valley width an ABSOLUTE function of drainage area.
+# generate() no longer passes it to solve (acc_ref=None scales the floor by
+# each map's own trunk); kept as the reference value mini.py's comments cite.
 ACC_REF = 1664.0
 # The two constants the corridor and the floor share: the trunk
-# half-width at ACC_REF, and the hillslope length growth aims for.  They are
+# half-width, and the hillslope length growth aims for.  They are
 # ONE calibration -- the generator keeps other channels out of a valley of
-# half-width FLOOR_PX * sqrt(A/ACC_REF) and `solve` then paints exactly that
-# valley -- so they are set here, once, rather than in either call site.
+# the half-width `solve` then paints -- so they are set here, once, rather
+# than in either call site.
 FLOOR_PX = 4.0
 ELL0 = 5.00
-# The zero-order basin: how far the hollow continues above each channel head,
-# in units of the hillslope length `ell`.  1.6 x ell puts the head
-# of the hollow at the divide, which is where a real one ends; beyond that the
-# extensions start running into their neighbours and the tip count falls again
-# (measured: the tip count peaks at 1.6).  Expressed in ell, not
-# px, so it follows the drainage density instead of fighting it.
-HOLLOW = 1.6
 GOLDEN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "valley_samples", "cache", "baseline_zero_s1.npz")
 
@@ -137,6 +130,25 @@ def hydraulic_reach(shape, root_list):
     for (r, c, _a) in root_list:
         m[int(r), int(c)] = False
     return float(ndi.distance_transform_edt(m).max())
+
+
+def edge_roots(rng, H, W, k):
+    """k outlets ON the map's edge, as (r, c, heading) for gen_headward.
+
+    Each one picks an edge at random and a position 12-88% along it (so no
+    outlet sits in a corner); the heading points inland, jittered by
+    N(0, 0.25) rad.  The outlet cell is the outermost row or column itself --
+    the edge IS the boundary the water leaves through."""
+    roots = []
+    for _ in range(k):
+        t = float(rng.uniform(0.12, 0.88))
+        e = int(rng.integers(4))
+        if e == 0:   rc, a = (H - 1, int(t * W)), -np.pi / 2      # bottom
+        elif e == 1: rc, a = (0, int(t * W)), np.pi / 2           # top
+        elif e == 2: rc, a = (int(t * H), 0), 0.0                 # left
+        else:        rc, a = (int(t * H), W - 1), np.pi           # right
+        roots.append((rc[0], rc[1], a + float(rng.normal(0, 0.25))))
+    return roots
 
 
 def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
@@ -194,15 +206,7 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     if outlets is not None:
         root_list = [(int(r), int(c), float(a)) for (r, c, a) in outlets]
     else:
-        root_list = []
-        for _ in range(k):
-            t = float(rng.uniform(0.12, 0.88))
-            e = int(rng.integers(4))
-            if e == 0:   rc, a = (H - 2, int(t * W)), -np.pi / 2      # bottom
-            elif e == 1: rc, a = (1, int(t * W)), np.pi / 2           # top
-            elif e == 2: rc, a = (int(t * H), 1), 0.0                 # left
-            else:        rc, a = (int(t * H), W - 2), np.pi           # right
-            root_list.append((rc[0], rc[1], a + float(rng.normal(0, 0.25))))
+        root_list = edge_roots(rng, H, W, k)
     reach = None if shape is None else hydraulic_reach((H, W), root_list)
     # THE FLOOR KNOB HAS TO REACH BOTH STAGES.  gen_headward reserves a
     # corridor of this width and solve paints a floor of this width; if they
@@ -222,9 +226,11 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
                                    reseed=reseed, labels=True)
     # bow: the route to concavity that leaves the fine scale alone
     # (see mini.profile_slope_area).  Default 0 = frozen.
+    # acc_ref and hollow_px are left at solve's defaults (None, 0): the floor
+    # width is scaled by the map's own trunk accumulation, and no zero-order
+    # hollow is drawn above the channel heads.
     u = solve(net, outlets=[(r, c) for (r, c, _) in root_list],
-              floor_px=fpx, theta=theta, acc_ref=ACC_REF, bow=bow,
-              hollow_px=HOLLOW * ELL0 / 1.20 ** density, labels=net_labels,
+              floor_px=fpx, theta=theta, bow=bow, labels=net_labels,
               method=method)
     # smooth acts on finish_micro's OWN final gaussian, so both directions
     # are real (an extra blur applied afterwards could not go below zero).
