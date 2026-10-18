@@ -72,7 +72,20 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 
 <img src="images/stage1_two.png" width="240" alt="第1段・流出点2つ：青と橙の2つの川の網が、互いに交わらずに枝分かれしている。">
 
-### 例3：東側に海を置く（seed = 7）
+### 例3：128×128 の地形（seed = 1）
+
+```python
+import numpy as np
+from experiments.mini import gen_headward
+
+net, lab = gen_headward(np.random.default_rng(1), n=128, labels=True)
+```
+
+これまで最もよく作ってきた大きさで、一連の定数もこの大きさを前提に調整しています。128 ピクセルで約 1.5 km 四方になります。`n` の既定値も 128 です。流出点は既定のまま、下辺中央の `(127, 64)` に置かれます。格子は 8 ピクセル（約 94 m）ごとに引いています。
+
+<img src="images/stage1_128.png" width="240" alt="第1段・128×128：下辺中央の流出点から、細かく枝分かれした川の網が地図全体に広がっている。">
+
+### 例4：東側に海を置く（seed = 7）
 
 ```python
 import numpy as np
@@ -144,7 +157,21 @@ u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 
 2つの流出点 `(35, 12)` と `(18, 35)` の周辺が最も低く、外側に向かって高くなります。
 
-### 例3：東側に海を置く（第1段・例3の続き）
+### 例3：128×128 の地形（第1段・例3の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+import numpy as np
+
+net, lab = gen_headward(np.random.default_rng(1), n=128, labels=True)
+u = solve(net, outlets=[(127, 64)], labels=lab)   # n=128 の既定の流出点は (n-1, n//2) = (127, 64)
+```
+
+<img src="images/stage2_128.png" width="260" alt="第2段・128×128：等高線入りの標高図。下辺中央の流出点に向かって本流の谷が低く伸び、そのあいだに丘が並ぶ。">
+
+下辺中央の流出点に向かって本流の谷が低く伸び、川と川のあいだに丘が並びます。
+
+### 例4：東側に海を置く（第1段・例4の続き）
 
 ```python
 from experiments.mini import gen_headward, solve
@@ -225,7 +252,24 @@ u_finished = finish_micro(u, net, rng)
 
 例1と同様に左の2枚を比べると、角ばっていた等高線が自然な形になっているのが分かります。
 
-### 例3：東側に海を置く（第2段・例3の続き）
+### 例3：128×128 の地形（第2段・例3の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+from experiments.mini_finish import finish_micro
+import numpy as np
+
+rng = np.random.default_rng(1)
+net, lab = gen_headward(rng, n=128, labels=True)
+u = solve(net, outlets=[(127, 64)], labels=lab)
+u_finished = finish_micro(u, net, rng)
+```
+
+<img src="images/stage2_128.png" width="220" alt="第2段・128×128：仕上げ前の標高図。"> <img src="images/stage3_128.png" width="220" alt="第3段・128×128：第2段の標高図に、斜面の細かな刻みが加わっている。"> <img src="images/stage3_128_diff.png" width="220" alt="第3段と第2段の差・128×128：丘の斜面のあちこちが青く削られ、川沿いにわずかな赤が見える。">
+
+刻みを入れる回数の上限 `max_cuts` は、128×128 では既定で 500 になります。
+
+### 例4：東側に海を置く（第2段・例4の続き）
 
 ```python
 from experiments.mini import gen_headward, solve
