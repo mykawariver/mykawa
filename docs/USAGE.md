@@ -24,7 +24,7 @@
 def gen_headward(rng, n=128, ell=5.0, ..., roots=None, shape=None, labels=False, domain=None, ...)
 ```
 
-必須の引数は乱数生成器 `rng` とlabels = Trueです。残りはすべて省略できます。
+必須の引数は乱数生成器 `rng` だけです。ただし、`labels=True` は必ず渡してください。残りはすべて省略できます。
 
 主な引数:
 
@@ -35,7 +35,7 @@ def gen_headward(rng, n=128, ell=5.0, ..., roots=None, shape=None, labels=False,
 | `roots` | `(行, 列, 向き)` のリスト。川の流出点。省略すると下辺中央に1つ置かれる。川を木に見立てているので、変数名は roots（根）になっている |
 | `domain` | bool 配列。True が陸。省略すると長方形全面が陸になる |
 | `reserve` | bool 配列。川を生やしてはいけない場所 |
-| `labels` | 常に `True` を渡す。ソフトウェアの互換性のため |
+| `labels` | 常に `True` を渡す。第2段に渡す `lab` を受け取るため（既定が `False` なのは、古い呼び出し方との互換性のため） |
 
 戻り値:
 
@@ -43,7 +43,7 @@ def gen_headward(rng, n=128, ell=5.0, ..., roots=None, shape=None, labels=False,
 
 - `-1`：陸の外
 - `0`：陸だが川ではない
-- k (0より大きいinteger)：k 番目の流出点に注ぐ川
+- `k`（正の整数）：k 番目の流出点に注ぐ川
 
 ### 例1：流出点を既定のままにする（seed = 3）
 
