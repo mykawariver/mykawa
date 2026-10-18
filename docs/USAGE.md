@@ -61,6 +61,9 @@ net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
 ### 例2：流出点を2つ置く（seed = 5）
 
 ```python
+import numpy as np
+from experiments.mini import gen_headward
+
 roots = [(35, 12, -np.pi/2),   # 下辺  → 上へ遡る
          (18, 35,  np.pi)]     # 右辺  → 左へ遡る
 net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True)
