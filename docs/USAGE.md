@@ -81,7 +81,7 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
           floor_tilt=0.0, hollow_px=0.0, labels=None)
 ```
 
-第1段が出力する `net`川のセルが `True` になっているbool配列を入力として使い、標高を含む二次元配列を出力する。
+第1段が出力する `net`（川のセルが `True` になっている bool 配列）を入力として、標高を割り当てた二次元配列を出力します。
 
 主な引数:
 
@@ -90,27 +90,27 @@ def solve(net, tilt=None, poisson=0.006, theta=0.3, cap_px=0.0, floor_px=4.0,
 | `net` | 第1段の出力（bool 配列） |
 | `outlets` | `(行, 列)` のリスト。第1段で使った `roots` の座標をそのまま渡す |
 | `labels` | 第1段から受け取った `lab` をそのまま渡す |
-| `theta` | 既定は0.3。川の縦断形状の凹み具合（Flint の法則の指数） |
-| `poisson` | 既定は0.006。丘を下から押し上げる強さ。0 だと谷の間の面は単なる調和補間（膜を張っただけ）になり、丘が川の高さを超えられない |
-| `floor_px` | 既定は4。谷底の幅 |
+| `theta` | 既定は 0.3。川の縦断形の凹み具合（Flint の法則の指数） |
+| `poisson` | 既定は 0.006。丘を下から押し上げる強さ。0 だと谷のあいだの面は単なる調和補間（膜を張っただけ）になり、丘が川の高さを超えられない |
+| `floor_px` | 既定は 4。谷底の幅の半分（px）の上限。本流ほど谷底が広くなり、支流は 1 px のまま |
 
-戻り値は `float64` の2次元配列（`net` と同じ形）。値は `[0, 1]` に正規化されている。`0` が最も低い（出口の高さ）。
+戻り値は `float64` の二次元配列で、形は `net` と同じです。値は `[0, 1]` に正規化されていて、`0` が最も低い場所（流出点の高さ）です。
 
-### 例1：流出点を既定のままにする（seed = 3）（第1段の続き）
+### 例1：流出点を既定のままにする（第1段・例1の続き）
 
 ```python
 from experiments.mini import gen_headward, solve
 import numpy as np
 
 net, lab = gen_headward(np.random.default_rng(3), n=36, labels=True)
-u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の出口は (n-2, n//2) = (34, 18)
+u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の流出点は (n-2, n//2) = (34, 18)
 ```
 
-![Stage 2, one outlet: a smooth blue elevation surface with contour lines, lightest near the outlet at the bottom and darkest at the far edges, the contours forming a V that points upstream along the channel.](images/stage2_single.png)
+<img src="images/stage2_single.png" width="260" alt="第2段・流出点1つ：等高線入りの標高図。下辺の流出点付近が最も低く（明るい色）、縁に近づくほど高い（濃い色）。等高線は川に沿って上流に向かう V字を描く。">
 
-実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999991799、NaN 無し）。出口 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなる（濃い色）。
+実際の値は `u.min()` = 0.0、`u.max()` = 0.9999999999991799 で、NaN はありません。流出点 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなります（濃い色）。
 
-### 例2：流出点を2つ置く（seed = 5）（第2段の続き）
+### 例2：流出点を2つ置く（第1段・例2の続き）
 
 ```python
 from experiments.mini import gen_headward, solve
@@ -122,9 +122,9 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 ```
 
-![Stage 2, two outlets: a blue elevation surface with contour lines, two light troughs following the two channels, and a smooth ridge rising exactly halfway between them.](images/stage2_two.png)
+<img src="images/stage2_two.png" width="260" alt="第2段・流出点2つ：等高線入りの標高図。2本の川に沿って低い谷が走り、そのあいだがなだらかに盛り上がっている。">
 
-実際の値（`u.min()` = 0.0、`u.max()` = 0.9999999999990007、NaN 無し）。出口の座標（`(35,12)` と `(18,35)`）の周辺で値が最も低くなっており、外側に向かって高くなっている。
+実際の値は `u.min()` = 0.0、`u.max()` = 0.9999999999990007 で、NaN はありません。2つの流出点 `(35, 12)` と `(18, 35)` の周辺が最も低く、外側に向かって高くなります。
 
 ##
 この下は編集中です！！！
