@@ -44,9 +44,12 @@ from scipy.sparse import csgraph
 from skimage import morphology as skmo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from experiments.mini import rejoin_after_thinning
+from experiments.mini import ACC_REF_NET, cone_floor, rejoin_after_thinning
 
 OFFS = ((0, 1, 1.0), (1, 0, 1.0), (1, 1, np.sqrt(2)), (1, -1, np.sqrt(2)))
+# gen_headward's median land-to-channel distance is 0.85-0.88 x ell over
+# density -2..+2 (n=128, seeds 1-5); 0.852 at ell = 5
+P50_PER_ELL = 0.852
 
 
 def noise(rng, H, W, smin=4.0, beta=0.5):
@@ -142,14 +145,68 @@ def outlet_of(parent):
         p[live] = parent[p[live]]
 
 
+def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
+    """Drop channel reaches that run inside a bigger river's valley floor.
+
+    gen_headward never lets a stroke enter another channel's floor except at
+    its own mouth, so a tributary may cross the floor to join, but not run
+    alongside inside it.  Here the network already exists: a channel cell is
+    INTRUDING when it lies in the floor of a channel cell y of a bigger river
+    (cone dilation, as gen_headward builds it) but joins that river more than
+    hw(y) + 2 steps downstream.  Intruding cells are removed with everything
+    upstream of them, as a stroke that hits the floor stops."""
+    H = raw.shape[0]
+    ch = raw.ravel()
+    A = catchment_sum(parent, depth, ch) * ch          # channel cells upstream
+    hw = np.where(ch, float(corridor) * (1.0 + (floor_px - 1.0)
+                                         * np.sqrt(A / float(acc_ref))), 0.0)
+    floor, (oy, ox) = cone_floor(raw, hw.reshape(H, W))
+    own = (oy * W + ox).ravel()
+    cut = np.zeros(len(ch), bool)
+    for x in np.flatnonzero(ch & floor.ravel()):
+        y = own[x]
+        if y == x or A[y] <= A[x]:
+            continue                         # its own floor, or a smaller river
+        # walk downstream to where x meets a river at least half y's size
+        i, k, lim = x, 0, hw[y] + 2.0
+        while i >= 0 and A[i] < 0.5 * A[y] and k <= lim:
+            i = parent[i]
+            k += 1
+        if k > lim:
+            cut[x] = True
+    if not cut.any():
+        return raw
+    # remove the cut cells and everything upstream of them
+    gone = cut.copy()
+    for grp in _levels(depth)[::-1]:                 # outlets first
+        p = parent[grp]
+        k = p >= 0
+        gone[grp[k]] |= gone[p[k]]
+    out = (ch & ~gone).reshape(raw.shape)
+    for (r, c, *_rest) in roots:
+        out[int(r), int(c)] = True
+    return out
+
+
 def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
-              p50=4.2, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=0.8,
+              ell=5.0, floor_px=4.0, corridor=1.0, acc_ref=ACC_REF_NET,
+              p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=0.8,
               rim_l=3.0, edge_a=0.9, edge_l=8.0, funnel=3.0, funnel_l=8.0,
               stem=10):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
-    channel draining to outlet k)."""
+    channel draining to outlet k).
+
+    ell and floor_px are gen_headward's two stage-1 knobs (baseline's
+    `density` and `floor`): ell sets the drainage density through the target
+    median land-to-channel distance, P50_PER_ELL * ell (`p50` overrides it);
+    floor_px sets the valley-floor half-width a river keeps clear of other
+    channels, hw = 1 + (floor_px - 1) * sqrt(A / acc_ref), A in channel
+    cells upstream -- the corridor rule of gen_headward, applied here after
+    the fact (corridor=0 turns it off)."""
+    if p50 is None:
+        p50 = P50_PER_ELL * float(ell)
     H, W = (int(n), int(n)) if shape is None else (int(shape[0]), int(shape[1]))
     if roots is None:
         roots = [(H - 1, W // 2, -np.pi / 2)]
@@ -226,6 +283,9 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         else:
             lo = mid
     raw = raw_net(np.exp(lo))
+    if corridor:
+        raw = _corridor(raw, parent, depth, W, roots, floor_px, corridor,
+                        acc_ref)
     net = rejoin_after_thinning(raw, skmo.skeletonize(raw), roots)
     if not labels:
         return net
