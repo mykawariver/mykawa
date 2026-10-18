@@ -72,6 +72,24 @@ net, lab = gen_headward(np.random.default_rng(5), n=36, roots=roots, labels=True
 
 <img src="images/stage1_two.png" width="240" alt="第1段・流出点2つ：青と橙の2つの川の網が、互いに交わらずに枝分かれしている。">
 
+### 例3：東側に海を置く（seed = 7）
+
+```python
+import numpy as np
+from experiments.mini import gen_headward
+
+n = 36
+coast = np.round(26 + 2 * np.sin(np.arange(n) * 2 * np.pi * 1.3 / n)).astype(int)  # 行ごとの海岸線の列
+domain = np.arange(n)[None, :] < coast[:, None]     # True が陸、False が海
+roots = [(r, coast[r] - 1, np.pi) for r in (9, 26)]  # 海岸線上の陸に流出点を置き、西（上流）へ伸ばす
+net, lab = gen_headward(np.random.default_rng(7), n=n, roots=roots, domain=domain, labels=True)
+```
+
+`domain` は陸の形を表す bool 配列で、`True` が陸、`False` が海です。ここでは、東側の海岸線を波打たせています。海には川が伸びず、`lab` では海が `-1` になります。流出点は海岸線上の陸のセルに置き、向きは `np.pi`（西）にしています。
+
+`reserve` は渡していません。`domain` を渡すと、海は自動的に `reserve` にも加えられるためです。`reserve=~domain` を明示しても、結果は変わりません。`reserve` は、陸の中に「川を生やしたくない場所」を別に指定したいときに使います。
+
+<img src="images/stage1_sea.png" width="240" alt="第1段・東に海：右側の灰色が海。海岸線上の2つの流出点から、青と橙の2つの川の網が西へ枝分かれしながら伸びている。">
 
 ## 第2段 — `solve`（川を手がかりに地面の高さを起こす）
 
@@ -125,6 +143,24 @@ u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 <img src="images/stage2_two.png" width="260" alt="第2段・流出点2つ：等高線入りの標高図。2本の川に沿って低い谷が走り、そのあいだがなだらかに盛り上がっている。">
 
 2つの流出点 `(35, 12)` と `(18, 35)` の周辺が最も低く、外側に向かって高くなります。
+
+### 例3：東側に海を置く（第1段・例3の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+import numpy as np
+
+n = 36
+coast = np.round(26 + 2 * np.sin(np.arange(n) * 2 * np.pi * 1.3 / n)).astype(int)  # 行ごとの海岸線の列
+domain = np.arange(n)[None, :] < coast[:, None]     # True が陸、False が海
+roots = [(r, coast[r] - 1, np.pi) for r in (9, 26)]  # 海岸線上の陸に流出点を置き、西（上流）へ伸ばす
+net, lab = gen_headward(np.random.default_rng(7), n=n, roots=roots, domain=domain, labels=True)
+u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
+```
+
+<img src="images/stage2_sea.png" width="260" alt="第2段・東に海：等高線入りの標高図。右側の灰色が海。西の内陸ほど高く、海岸と2本の川に向かって低くなる。">
+
+`solve` には `domain` を渡しません。海の形は `labels`（`lab` の `-1`）から読み取られます。海のセルの値は NaN になり、図では灰色で表しています。西の内陸ほど高く、海岸と2本の川に向かって低くなります。
 
 ## 第3段 — `finish_micro`（斜面に細かな刻みを入れて仕上げる）
 
@@ -188,6 +224,27 @@ u_finished = finish_micro(u, net, rng)
 <img src="images/stage2_two.png" width="220" alt="第2段・流出点2つ：仕上げ前の標高図。等高線が角ばっている。"> <img src="images/stage3_two.png" width="220" alt="第3段・流出点2つ：第2段の標高図に、両側の斜面の細かな刻みが加わっている。"> <img src="images/stage3_two_diff.png" width="220" alt="第3段と第2段の差・流出点2つ：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。">
 
 例1と同様に左の2枚を比べると、角ばっていた等高線が自然な形になっているのが分かります。
+
+### 例3：東側に海を置く（第2段・例3の続き）
+
+```python
+from experiments.mini import gen_headward, solve
+from experiments.mini_finish import finish_micro
+import numpy as np
+
+n = 36
+coast = np.round(26 + 2 * np.sin(np.arange(n) * 2 * np.pi * 1.3 / n)).astype(int)  # 行ごとの海岸線の列
+domain = np.arange(n)[None, :] < coast[:, None]     # True が陸、False が海
+roots = [(r, coast[r] - 1, np.pi) for r in (9, 26)]  # 海岸線上の陸に流出点を置き、西（上流）へ伸ばす
+rng = np.random.default_rng(7)
+net, lab = gen_headward(rng, n=n, roots=roots, domain=domain, labels=True)
+u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
+u_finished = finish_micro(u, net, rng, domain=domain)   # 海があるときは domain を必ず渡す
+```
+
+<img src="images/stage2_sea.png" width="220" alt="第2段・東に海：仕上げ前の標高図。等高線が角ばっている。"> <img src="images/stage3_sea.png" width="220" alt="第3段・東に海：第2段の標高図に、斜面の細かな刻みが加わっている。"> <img src="images/stage3_sea_diff.png" width="220" alt="第3段と第2段の差・東に海：大部分が青（削られて低くなった場所）で、川の脇などに小さな赤（高くなった場所）が散らばる。海は灰色。">
+
+`finish_micro` には `domain` を必ず渡します。渡さないと、海の NaN を扱えずにエラーで止まります。
 
 ##
 この下は編集中です！！！
