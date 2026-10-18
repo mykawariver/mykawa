@@ -108,7 +108,7 @@ u = solve(net, outlets=[(34, 18)], labels=lab)   # n=36 の既定の流出点は
 
 <img src="images/stage2_single.png" width="260" alt="第2段・流出点1つ：等高線入りの標高図。下辺の流出点付近が最も低く（明るい色）、縁に近づくほど高い（濃い色）。等高線は川に沿って上流に向かう V字を描く。">
 
-実際の値は `u.min()` = 0.0、`u.max()` = 0.9999999999991799 で、NaN はありません。流出点 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなります（濃い色）。
+流出点 `(34, 18)` の周辺が最も低く（明るい色）、地図の縁に近づくほど高くなります（濃い色）。
 
 ### 例2：流出点を2つ置く（第1段・例2の続き）
 
@@ -124,7 +124,61 @@ u = solve(net, outlets=[(r, c) for (r, c, _a) in roots], labels=lab)
 
 <img src="images/stage2_two.png" width="260" alt="第2段・流出点2つ：等高線入りの標高図。2本の川に沿って低い谷が走り、そのあいだがなだらかに盛り上がっている。">
 
-実際の値は `u.min()` = 0.0、`u.max()` = 0.9999999999990007 で、NaN はありません。2つの流出点 `(35, 12)` と `(18, 35)` の周辺が最も低く、外側に向かって高くなります。
+2つの流出点 `(35, 12)` と `(18, 35)` の周辺が最も低く、外側に向かって高くなります。
+
+## 第3段 — `finish_micro`（斜面に細かな刻みを入れて仕上げる）
+
+```python
+def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
+                 rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=None,
+                 refresh=12, final_sigma=0.9, domain=None)
+```
+
+第2段が返す `u`（面）と第1段の `net`（1px の川）を受け取り、丘の斜面に細かい刻みを入れる。これにより地形に複雑さが加わり自然な造形に近づく。
+
+主な引数:
+
+| 引数 | 意味 |
+|---|---|
+| `u` | 第2段の出力（面） |
+| `net` | 第1段の出力。どこを刻んでよいかの判断に使う |
+| `rng` | 乱数生成器。第1段で使ったものをそのまま使う |
+| `spacing` | 刻みを入れる間隔（px）。この間隔より水の通り道から遠い場所が無くなるまで繰り返す |
+| `depth0` | 刻みの深さの上限 |
+| `max_cuts` | 削る回数の上限。既定 `None` は地図の面積に比例して決める（`generate()` と同じ規則。128×128 で500、36×36 なら約39） |
+| `final_sigma` | 最後にかける、ごく弱いぼかしの強さ |
+| `domain` | bool 配列。陸の形（省略すると長方形全面） |
+
+戻り値は `u` と同じ形の `float64` 配列。
+
+Hi Claude, この下を今までとフォーマットにして！
+
+### 実験：第2段の出力2つをそのまま通す
+
+```python
+from experiments.mini import gen_headward, solve
+from experiments.mini_finish import finish_micro
+import numpy as np
+
+rng = np.random.default_rng(3)
+net, lab = gen_headward(rng, n=36, labels=True)
+u = solve(net, outlets=[(34, 18)], labels=lab)
+u_finished = finish_micro(u, net, rng)   # rng は gen_headward と同じものを渡す
+```
+
+![Stage 3, one outlet: the same blue elevation surface as stage 2 with contour lines, now with fine texture cut into the hillslopes.](images/stage3_single.png)
+![Stage 3 minus stage 2, one outlet: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_single_diff.png)
+
+同じことを、出口2つの地形にも行った。
+
+![Stage 3, two outlets: the two-outlet elevation surface from stage 2 with contour lines, now with fine texture cut into both hillslopes.](images/stage3_two.png)
+![Stage 3 minus stage 2, two outlets: mostly blue (lower, carved), with a few small red patches where the surface ended up slightly higher than before.](images/stage3_two_diff.png)
+
+
+
+
+
+
 
 ##
 この下は編集中です！！！
