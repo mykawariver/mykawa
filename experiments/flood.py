@@ -199,7 +199,12 @@ def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
             cut[x] = True
     if not cut.any():
         return raw
-    # remove the cut cells and everything upstream of them
+    return _drop_upstream(raw, cut, parent, depth, roots)
+
+
+def _drop_upstream(raw, cut, parent, depth, roots):
+    """raw without the `cut` cells and everything upstream of them."""
+    ch = raw.ravel()
     gone = cut.copy()
     for grp in _levels(depth)[::-1]:                 # outlets first
         p = parent[grp]
@@ -214,8 +219,8 @@ def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
 def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               ell=5.0, floor_px=4.0, corridor=1.0, acc_ref=ACC_REF_NET,
               p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=0.8,
-              rim_l=3.0, edge_a=0.9, edge_l=8.0, funnel=3.0, funnel_l=8.0,
-              stem=10, floor_rounds=2):
+              rim_l=3.0, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
+              stem=10, stem_cut=3, floor_rounds=2):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -244,9 +249,12 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     if funnel:
         for (r, c, *_rest) in roots:
             h -= funnel * np.exp(-np.hypot(iy - int(r), ix - int(c)) / funnel_l)
-    if stem:
+    if stem_cut:
+        # a few px cut straight in along the heading make the outlet own its
+        # valley mouth; the rest of the stem follows the flood tree (below),
+        # so it bends like any other reach
         for (r, c, a0, *_rest) in roots:
-            for k in range(int(stem)):
+            for k in range(int(stem_cut)):
                 rr = int(round(r + k * np.sin(a0)))
                 cc = int(round(c + k * np.cos(a0)))
                 if 0 <= rr < H and 0 <= cc < W:
@@ -318,6 +326,15 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         fl = _floor_of(raw, parent, depth, W, floor_px,
                        corridor * FLOOR_REACH, acc_ref)
         raw = raw_net(Ac, catchment_sum(parent, depth, ~fl.ravel()))
+    # the outermost ring is a divide (gen_headward never grows into it): a
+    # head that runs out onto it is dropped with the little upstream of it.
+    # Only near heads (a few channel cells upstream) -- a trunk that touches
+    # the ring just above its outlet keeps its whole basin.
+    ring = edge.ravel() & raw.ravel()
+    ring &= catchment_sum(parent, depth, raw.ravel()) <= 2 * float(ell)
+    ring &= ~stem_cells                    # never an outlet or its stem
+    if ring.any():
+        raw = _drop_upstream(raw, ring, parent, depth, roots)
     if corridor:
         raw = _corridor(raw, parent, depth, W, roots, floor_px,
                         corridor * FLOOR_REACH, acc_ref)
