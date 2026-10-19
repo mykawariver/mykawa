@@ -155,7 +155,7 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
              smooth=0.0, roots=0, concavity=0.0, n_roots=None, theta=None,
              shape=None, outlets=None, bow=0.0, stage="finish",
              trend=None, trend_max=1.15, split_p=0.0, reseed=True,
-             method="poisson"):
+             method="poisson", stage1="headward"):
     """The canonical generator.  All knobs zero = the frozen baseline.
     Returns (u, net, meta): u in [0, relief_span], net the 1-px channels.
 
@@ -176,7 +176,17 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     terrain: it is inside the valley floors, not on the hillslopes.
 
     method: stage 2's solver, "poisson" (the zero) or "two_bones" (ridges
-    pinned too; see mini.solve)."""
+    pinned too; see mini.solve).
+
+    stage1: stage 1's generator, "headward" (mini.gen_headward, the zero) or
+    "flood" (flood.gen_flood: much faster on big maps, a network of its own
+    character).  The knobs reach both the same way: density through ell,
+    floor through floor_px, roots through the outlets.  gen_flood has no
+    flow-direction constraint, so `trend` is refused with it."""
+    if stage1 not in ("headward", "flood"):
+        raise ValueError(f"stage1 must be 'headward' or 'flood', not {stage1!r}")
+    if stage1 == "flood" and trend is not None:
+        raise ValueError("stage1='flood' does not support `trend`")
     from experiments.mini import gen_headward, solve
     from experiments.mini_finish import finish_micro
     # concavity drives BOW, not theta (see the knob docs above and
@@ -219,11 +229,17 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     # the labels, `solve` would weld neighbouring basins with the zero-order
     # hollow and measure distance to the NEAREST outlet, so a small tree could
     # end up carrying the map's largest drainage area.
-    net, net_labels = gen_headward(rng, n=n, ell=ELL0 / 1.20 ** density,
-                                   roots=root_list, shape=(H, W), reach=reach,
-                                   floor_px=fpx, trend=trend,
-                                   trend_max=trend_max, split_p=split_p,
-                                   reseed=reseed, labels=True)
+    if stage1 == "flood":
+        from experiments.flood import gen_flood
+        net, net_labels = gen_flood(rng, n=n, ell=ELL0 / 1.20 ** density,
+                                    roots=root_list, shape=(H, W),
+                                    floor_px=fpx, labels=True)
+    else:
+        net, net_labels = gen_headward(rng, n=n, ell=ELL0 / 1.20 ** density,
+                                       roots=root_list, shape=(H, W),
+                                       reach=reach, floor_px=fpx, trend=trend,
+                                       trend_max=trend_max, split_p=split_p,
+                                       reseed=reseed, labels=True)
     # bow: the route to concavity that leaves the fine scale alone
     # (see mini.profile_slope_area).  Default 0 = frozen.
     # acc_ref and hollow_px are left at solve's defaults (None, 0): the floor
