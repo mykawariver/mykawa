@@ -168,7 +168,8 @@ def _floor_of(raw, parent, depth, W, floor_px, corridor, acc_ref):
     return floor & ~raw
 
 
-def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
+def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref,
+              cut_max=np.inf):
     """Drop channel reaches that run inside a bigger river's valley floor.
 
     gen_headward never lets a stroke enter another channel's floor except at
@@ -177,7 +178,11 @@ def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
     INTRUDING when it lies in the floor of a channel cell y of a bigger river
     (cone dilation, as gen_headward builds it) but joins that river more than
     hw(y) + 2 steps downstream.  Intruding cells are removed with everything
-    upstream of them, as a stroke that hits the floor stops."""
+    upstream of them, as a stroke that hits the floor stops -- but only where
+    that is a small headwater (at most cut_max channel cells upstream).  A
+    big tributary that runs down a trunk's floor before it joins is real
+    terrain, and on a long map, where a trunk's floor is tens of px wide,
+    cutting it would take whole tributary trees with it."""
     H = raw.shape[0]
     ch = raw.ravel()
     A = catchment_sum(parent, depth, ch) * ch          # channel cells upstream
@@ -195,7 +200,7 @@ def _corridor(raw, parent, depth, W, roots, floor_px, corridor, acc_ref):
         while i >= 0 and A[i] < 0.5 * A[y] and k <= lim:
             i = parent[i]
             k += 1
-        if k > lim:
+        if k > lim and A[x] <= cut_max:
             cut[x] = True
     if not cut.any():
         return raw
@@ -221,7 +226,7 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=4.0,
               rim_l=1.5, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
               stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
-              funnel_w=4.0):
+              funnel_w=4.0, cut_ell=8.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -357,7 +362,8 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         raw = raw_net(Ac, catchment_sum(parent, depth, ~fl.ravel()))
     if corridor:
         raw = _corridor(raw, parent, depth, W, roots, floor_px,
-                        corridor * FLOOR_REACH, acc_ref)
+                        corridor * FLOOR_REACH, acc_ref,
+                        cut_max=cut_ell * float(ell))
     net = rejoin_after_thinning(raw, skmo.skeletonize(raw), roots)
     if not labels:
         return net
