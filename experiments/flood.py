@@ -21,8 +21,9 @@ HOW IT WORKS
   4. thinned to 1 px with mini.rejoin_after_thinning, like gen_headward.
 
 FIXES FOR WHAT A PLAIN FLOOD GETS WRONG (each measured at n=128, seeds 1-10)
-  * rim: the map edge is a divide except at the outlets; without a slight
-    rim, trunks run along the edge;
+  * boundary: the map's outer ring and the coast are divides except at the
+    outlets; their cells are left out of the flood, so no river runs on
+    them, and a slight rim keeps trunks from running just inside them;
   * edge_a / edge_l: a head sits about a hillslope length below a divide, so
     near the edge the threshold drops; otherwise the edge band is left
     undissected and the stage 2 surface gets a high frame;
@@ -31,9 +32,8 @@ FIXES FOR WHAT A PLAIN FLOOD GETS WRONG (each measured at n=128, seeds 1-10)
     starts every root with a stroke); otherwise the outlet with the lowest
     pass takes most of the map and others drain a single cell.
 
-`domain` is accepted (the flood stays on the land) but the rim, the edge
-threshold and the funnel know only the rectangle's edges, not a coast;
-untested on shaped maps.
+With `domain`, the coast is part of that boundary: rivers reach the sea only
+at the outlets.
 """
 import os
 import sys
@@ -218,9 +218,10 @@ def _drop_upstream(raw, cut, parent, depth, roots):
 
 def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               ell=5.0, floor_px=4.0, corridor=1.0, acc_ref=ACC_REF_NET,
-              p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=0.8,
-              rim_l=3.0, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
-              stem=10, stem_cut=3, floor_rounds=2):
+              p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=4.0,
+              rim_l=1.5, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
+              stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
+              funnel_w=4.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -247,8 +248,15 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         g = ndi.gaussian_filter(rng.standard_normal((H, W)), fine_s)
         h += fine * g / g.std()
     if funnel:
-        for (r, c, *_rest) in roots:
-            h -= funnel * np.exp(-np.hypot(iy - int(r), ix - int(c)) / funnel_l)
+        # each outlet sits at the foot of a valley that runs INLAND along its
+        # heading (deep at the mouth, fading over funnel_l, funnel_w wide).
+        # A round bowl would do for ownership, but inside the rim its lowest
+        # path is a band along the boundary, and tributaries slide down it.
+        for (r, c, a0, *_rest) in roots:
+            t = (iy - r) * np.sin(a0) + (ix - c) * np.cos(a0)
+            lat = np.abs(-(iy - r) * np.cos(a0) + (ix - c) * np.sin(a0))
+            h -= (funnel * np.exp(-np.maximum(t, 0.0) / funnel_l)
+                  * np.exp(-(lat / funnel_w) ** 2))
     if stem_cut:
         # a few px cut straight in along the heading make the outlet own its
         # valley mouth; the rest of the stem follows the flood tree (below),
@@ -259,18 +267,39 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
                 cc = int(round(c + k * np.cos(a0)))
                 if 0 <= rr < H and 0 <= cc < W:
                     h[rr, cc] = -1e3 + k
-    edge = np.ones((H, W), bool)
-    edge[1:-1, 1:-1] = False
+    # THE BOUNDARY: the land cells on the map's outer ring or next to the
+    # sea.  Except at the outlets it is a divide -- a map edge and a coast
+    # alike -- so no river may run on it: those cells are left out of the
+    # flood altogether, and the rim and the head threshold below follow it.
+    land = np.ones((H, W), bool) if mask is None else mask.copy()
+    bnd = land & ~ndi.binary_erosion(np.pad(land, 1), np.ones((3, 3)))[1:-1, 1:-1]
+    out_cells = np.zeros((H, W), bool)
+    for (r, c, *_rest) in roots:
+        out_cells[int(r), int(c)] = True
     if rim:
-        e = edge.copy()
-        for (r, c, *_rest) in roots:
-            e[max(0, int(r) - 2):int(r) + 3, max(0, int(c) - 2):int(c) + 3] = False
-        h += rim * np.exp(-ndi.distance_transform_edt(~e) / rim_l)
+        # a steep rim just inside the boundary turns flow inland at once, so
+        # no river runs alongside an edge or a coast.  It opens smoothly at
+        # each outlet (within ~rim_open px) like a valley mouth: a gap that is
+        # too wide lets the funnel draw a channel along the boundary into the
+        # outlet, and none at all leaves a bank across the mouth that sends
+        # the land behind it to another outlet.
+        de = ndi.distance_transform_edt(~(bnd & ~out_cells))
+        # the opening is a narrow gap along each outlet's heading, not a
+        # disc: a disc lets tributaries slide in along the boundary from
+        # either side, while a gap only lets the river leave head-on
+        dmin = np.full((H, W), np.inf)
+        for (r, c, a0, *_rest) in roots:
+            t = np.clip((iy - r) * np.sin(a0) + (ix - c) * np.cos(a0),
+                        0.0, 2.0 * rim_open)
+            dmin = np.minimum(dmin, np.hypot(iy - (r + t * np.sin(a0)),
+                                             ix - (c + t * np.cos(a0))))
+        opening = 1.0 - np.exp(-(dmin / 1.5) ** 2)
+        h += rim * np.exp(-(de - 1.0) / rim_l) * opening * land
 
-    parent = flood_tree(h, roots, mask)
+    parent = flood_tree(h, roots, land & ~(bnd & ~out_cells))
     depth = depth_of(parent)
     acc = catchment_sum(parent, depth)
-    thr = (1.0 - edge_a * np.exp(-ndi.distance_transform_edt(~edge)
+    thr = (1.0 - edge_a * np.exp(-ndi.distance_transform_edt(~bnd)
                                  / edge_l)).ravel()
 
     # the stem cells: from each outlet along the largest tributary
@@ -326,15 +355,6 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         fl = _floor_of(raw, parent, depth, W, floor_px,
                        corridor * FLOOR_REACH, acc_ref)
         raw = raw_net(Ac, catchment_sum(parent, depth, ~fl.ravel()))
-    # the outermost ring is a divide (gen_headward never grows into it): a
-    # head that runs out onto it is dropped with the little upstream of it.
-    # Only near heads (a few channel cells upstream) -- a trunk that touches
-    # the ring just above its outlet keeps its whole basin.
-    ring = edge.ravel() & raw.ravel()
-    ring &= catchment_sum(parent, depth, raw.ravel()) <= 2 * float(ell)
-    ring &= ~stem_cells                    # never an outlet or its stem
-    if ring.any():
-        raw = _drop_upstream(raw, ring, parent, depth, roots)
     if corridor:
         raw = _corridor(raw, parent, depth, W, roots, floor_px,
                         corridor * FLOOR_REACH, acc_ref)
