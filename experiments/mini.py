@@ -795,6 +795,57 @@ _FOLD = [0, None, None]   # diagnostic: rejects, S field, raw net
 # A generator is (rng, N) -> 1-px bool centreline.  Keep each one SHORT: if a
 # rule needs more than ~40 lines to state, it is not a rule, it is a pipeline.
 
+def _unique_nearest(mask, r, c):
+    """The True cell of `mask` nearest (r, c), if exactly one cell is at that
+    distance; None if several tie (or there is none), because then which one
+    distance_transform_edt reports is scipy's own choice."""
+    H, W = mask.shape
+    R = 8
+    while True:
+        r0, r1 = max(0, r - R), min(H, r + R + 1)
+        c0, c1 = max(0, c - R), min(W, c + R + 1)
+        fy, fx = np.nonzero(mask[r0:r1, c0:c1])
+        whole = r0 == 0 and c0 == 0 and r1 == H and c1 == W
+        if len(fy):
+            d2 = (fy + (r0 - r)) ** 2 + (fx + (c0 - c)) ** 2
+            m = d2.min()
+            if m <= R * R or whole:
+                k = np.flatnonzero(d2 == m)
+                return (int(fy[k[0]]) + r0, int(fx[k[0]]) + c0) \
+                    if len(k) == 1 else None
+        elif whole:
+            return None
+        R *= 2
+
+
+def _blur_update(d, d0, G0, sigma):
+    """ndi.gaussian_filter(d, sigma), given G0 = the same of d0: only the
+    cells within the kernel radius of a changed cell are recomputed, from a
+    window one more radius wide.  Bit for bit the whole-map filter: each output
+    is the same fixed-order sum over its own neighbourhood, and the window's
+    own edges (where the boundary rule would differ) are cut away."""
+    H, W = d.shape
+    if d0.shape != d.shape:
+        return ndi.gaussian_filter(d, sigma)
+    ch = d != d0
+    if not ch.any():
+        return G0
+    M = int(4.0 * sigma + 0.5)               # gaussian_filter's radius
+    rows = np.flatnonzero(ch.any(1))
+    cols = np.flatnonzero(ch.any(0))
+    r0, r1, c0, c1 = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+    a0, a1 = max(0, r0 - 2 * M), min(H, r1 + 2 * M)
+    b0, b1 = max(0, c0 - 2 * M), min(W, c1 + 2 * M)
+    if (a1 - a0) * (b1 - b0) > 0.6 * H * W:
+        return ndi.gaussian_filter(d, sigma)
+    p0, p1 = max(0, r0 - M), min(H, r1 + M)
+    q0, q1 = max(0, c0 - M), min(W, c1 + M)
+    g = ndi.gaussian_filter(d[a0:a1, b0:b1], sigma)
+    G = G0.copy()
+    G[p0:p1, q0:q1] = g[p0 - a0:p1 - a0, q0 - b0:q1 - b0]
+    return G
+
+
 def _fold_refuses(others, S, cap, ri, ci, s_k, full):
     """The no-folding test of `_walk` at cell (ri, ci):
 
@@ -1223,6 +1274,17 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
     from experiments.mini_finish import _refresh_distance
     _dn_cache = []
     _cf_cache = {}                   # cone_floor's level transforms
+    _g_cache = []
+
+    def blur_d(dd):
+        # gaussian_filter(d, 2.0), recomputed only round the cells of d that
+        # changed since the last call (see _blur_update); `d` is always
+        # rebound, never written into, so the cached array stays valid.
+        G = (_blur_update(dd, *_g_cache, 2.0) if _g_cache
+             else ndi.gaussian_filter(dd, 2.0))
+        _g_cache[:] = [dd, G]
+        return G
+
 
     def dist_net():
         if not _dn_cache:
@@ -1308,7 +1370,7 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 # a distance transform there would dominate the run time.
                 _dn, _nearest = ndi.distance_transform_edt(
                     ~net, return_indices=True)
-            gr, gc = np.gradient(ndi.gaussian_filter(d, 2.0))
+            gr, gc = np.gradient(blur_d(d))
             # `look` reads `d`, which only changes here, so its value per tip
             # is cached and refreshed with the field instead of being recomputed
             # for every tip on every iteration.  Identical ordering (Python's
@@ -1340,14 +1402,26 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 break
             # every head has retired but land is still undrained: start a new
             # head on the channel nearest the farthest dry point, aimed at it.
-            if net0 is not None:
-                ny, nx = _nearest
-            else:
-                _, (ny, nx) = ndi.distance_transform_edt(~net,
-                                                         return_indices=True)
             if trend is None:
                 fr, fc = np.unravel_index(int(np.argmax(d)), d.shape)
+                # only the channel cell nearest (fr, fc) is needed: found
+                # locally when it is the only one at that distance, else (a
+                # tie, where scipy's choice decides) from the transform
+                near = None if net0 is not None else _unique_nearest(net, fr,
+                                                                     fc)
+                if near is None:
+                    if net0 is not None:
+                        ny, nx = _nearest
+                    else:
+                        _, (ny, nx) = ndi.distance_transform_edt(
+                            ~net, return_indices=True)
+                    near = (ny[fr, fc], nx[fr, fc])
             else:
+                if net0 is not None:
+                    ny, nx = _nearest
+                else:
+                    _, (ny, nx) = ndi.distance_transform_edt(
+                        ~net, return_indices=True)
                 # Most of the network (~94% on a strip) is built by this
                 # re-seed branch, not by headward growth from the outlet, and
                 # each re-seeded head is aimed at the farthest dry point in
@@ -1366,7 +1440,8 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 if _cand.max() <= 0:
                     break                      # 錐の中に乾いた土地はもう無い
                 fr, fc = np.unravel_index(int(np.argmax(_cand)), d.shape)
-            sr, sc = float(ny[fr, fc]), float(nx[fr, fc])
+                near = (ny[fr, fc], nx[fr, fc])
+            sr, sc = float(near[0]), float(near[1])
             # a re-seeded head is a tributary of whatever it grew from, so it
             # gets a tributary-sized budget, never a trunk-sized one
             s_at = S[int(sr), int(sc)]
