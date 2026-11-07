@@ -151,11 +151,14 @@ def edge_roots(rng, H, W, k):
     return roots
 
 
+_STAGE1 = {}      # the last stage 1 generate() ran: key, net, labels, rng
+
+
 def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
              smooth=0.0, roots=0, concavity=0.0, n_roots=None, theta=None,
              shape=None, outlets=None, bow=0.0, stage="finish",
              trend=None, trend_max=1.15, split_p=0.0, reseed=True,
-             method="poisson", stage1="headward"):
+             method="poisson", stage1="headward", pick="argsort"):
     """The canonical generator.  All knobs zero = the frozen baseline.
     Returns (u, net, meta): u in [0, relief_span], net the 1-px channels.
 
@@ -182,7 +185,11 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     "flood" (flood.gen_flood: much faster on big maps, a network of its own
     character).  The knobs reach both the same way: density through ell,
     floor through floor_px, roots through the outlets.  gen_flood has no
-    flow-direction constraint, so `trend` is refused with it."""
+    flow-direction constraint, so `trend` is refused with it.
+
+    pick: stage 3's candidate listing (see mini_finish.finish_micro).
+    "argsort" is the zero; "stable" gives the same terrain on every CPU and
+    is much faster on big maps, but it is a different terrain."""
     if stage1 not in ("headward", "flood"):
         raise ValueError(f"stage1 must be 'headward' or 'flood', not {stage1!r}")
     if stage1 == "flood" and trend is not None:
@@ -229,17 +236,35 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
     # the labels, `solve` would weld neighbouring basins with the zero-order
     # hollow and measure distance to the NEAREST outlet, so a small tree could
     # end up carrying the map's largest drainage area.
-    if stage1 == "flood":
-        from experiments.flood import gen_flood
-        net, net_labels = gen_flood(rng, n=n, ell=ELL0 / 1.20 ** density,
-                                    roots=root_list, shape=(H, W),
-                                    floor_px=fpx, labels=True)
+    # The last stage 1 is remembered (see _STAGE1): calls that differ only
+    # in stage 2 or 3 -- the two solve methods, the relief/texture/smooth
+    # knobs -- then grow the network once.  The key holds the rng state and
+    # every input stage 1 reads, and a hit restores the rng to where stage 1
+    # left it, so the result is the same as growing it again.
+    key = (repr(rng.bit_generator.state), stage1, int(n), H, W,
+           tuple(root_list), reach, float(fpx), float(density),
+           None if trend is None else float(trend), float(trend_max),
+           float(split_p), bool(reseed))
+    if _STAGE1.get("key") == key:
+        net, net_labels = _STAGE1["net"].copy(), _STAGE1["labels"].copy()
+        rng.bit_generator.state = _STAGE1["rng"]
     else:
-        net, net_labels = gen_headward(rng, n=n, ell=ELL0 / 1.20 ** density,
-                                       roots=root_list, shape=(H, W),
-                                       reach=reach, floor_px=fpx, trend=trend,
-                                       trend_max=trend_max, split_p=split_p,
-                                       reseed=reseed, labels=True)
+        if stage1 == "flood":
+            from experiments.flood import gen_flood
+            net, net_labels = gen_flood(rng, n=n, ell=ELL0 / 1.20 ** density,
+                                        roots=root_list, shape=(H, W),
+                                        floor_px=fpx, labels=True)
+        else:
+            net, net_labels = gen_headward(rng, n=n,
+                                           ell=ELL0 / 1.20 ** density,
+                                           roots=root_list, shape=(H, W),
+                                           reach=reach, floor_px=fpx,
+                                           trend=trend, trend_max=trend_max,
+                                           split_p=split_p, reseed=reseed,
+                                           labels=True)
+        _STAGE1.clear()
+        _STAGE1.update(key=key, net=net.copy(), labels=net_labels.copy(),
+                       rng=rng.bit_generator.state)
     # bow: the route to concavity that leaves the fine scale alone
     # (see mini.profile_slope_area).  Default 0 = frozen.
     # acc_ref and hollow_px are left at solve's defaults (None, 0): the floor
@@ -260,7 +285,7 @@ def generate(seed, n=N, relief=0.0, texture=0.0, floor=0.0, density=0.0,
                      depth0=0.13 * 1.30 ** texture,
                      width=2.4 * 1.15 ** texture,
                      smooth=1.5, max_cuts=int(500 * (H * W) / (N * N)),
-                     final_sigma=0.9 * 1.25 ** smooth)
+                     final_sigma=0.9 * 1.25 ** smooth, pick=pick)
     span = RELIEF * 1.25 ** relief
     u = (u - u.min()) / (u.max() - u.min() + 1e-12) * span
     meta = dict(seed=seed, roots=len(root_list), span=span,

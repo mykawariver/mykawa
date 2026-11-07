@@ -45,42 +45,80 @@ def _blur(a, sigma, dom):
 
 
 def _refresh_distance(d, painted):
-    """d = the distance to a set of cells; painted = (rows, cols) arrays of
-    cells added to the set since.  Returns the distance to the grown set.
+    """d = the distance to a set of cells; painted = a list of (rows, cols)
+    arrays of cells added to the set since.  Returns the distance to the grown
+    set.
 
     A new cell can only lower d where it is nearer than d already is, i.e.
-    within d.max() of it, so the transform runs on the box around the new
-    cells widened by that much, and the result is min'd in.  Exact: every
-    distance is the square root of an integer sum of squares, the same float
-    whichever way it is found."""
-    if not painted:
+    within d.max() of it, so the transform runs on a box around the new cells
+    widened by that much, and the result is min'd in -- one box per group when
+    the groups lie apart (a refresh's strokes are scattered over a long map),
+    else one box round them all.  Exact: every distance is the square root of
+    an integer sum of squares, the same float whichever way it is found, and a
+    min does not depend on the order it is taken in."""
+    groups = [(np.asarray(r), np.asarray(c)) for r, c in painted if len(r)]
+    if not groups:
         return d
     H, W = d.shape
     R = int(np.ceil(d.max())) + 1
-    rows = np.concatenate([p[0] for p in painted])
-    cols = np.concatenate([p[1] for p in painted])
-    if not rows.size:
-        return d
-    r0, r1 = max(0, int(rows.min()) - R), min(H, int(rows.max()) + R + 1)
-    c0, c1 = max(0, int(cols.min()) - R), min(W, int(cols.max()) + R + 1)
-    seed = np.ones((r1 - r0, c1 - c0), bool)
-    seed[rows - r0, cols - c0] = False
+
+    def box(rows, cols):
+        return (max(0, int(rows.min()) - R), min(H, int(rows.max()) + R + 1),
+                max(0, int(cols.min()) - R), min(W, int(cols.max()) + R + 1))
+
+    rows = np.concatenate([g[0] for g in groups])
+    cols = np.concatenate([g[1] for g in groups])
+    whole = box(rows, cols)
+    parts = [box(*g) for g in groups]
+    area = lambda b: (b[1] - b[0]) * (b[3] - b[2])
+    if len(parts) > 1 and sum(map(area, parts)) < area(whole):
+        jobs = list(zip(parts, groups))
+    else:
+        jobs = [(whole, (rows, cols))]
     d = d.copy()
-    np.minimum(d[r0:r1, c0:c1], ndi.distance_transform_edt(seed),
-               out=d[r0:r1, c0:c1])
+    for (r0, r1, c0, c1), (rr, cc) in jobs:
+        seed = np.ones((r1 - r0, c1 - c0), bool)
+        seed[rr - r0, cc - c0] = False
+        np.minimum(d[r0:r1, c0:c1], ndi.distance_transform_edt(seed),
+                   out=d[r0:r1, c0:c1])
     return d
+
+
+def _top_stable(a, k):
+    """np.argsort(a, kind="stable")[-k:] without the sort: the k largest
+    values, ties broken by position (the later index ranks higher), in the
+    same ascending order.  Linear time."""
+    if a.size <= k:
+        return np.argsort(a, kind="stable")
+    kth = np.partition(a, a.size - k)[a.size - k]      # the k-th largest value
+    gt = np.flatnonzero(a > kth)
+    eq = np.flatnonzero(a == kth)[-(k - len(gt)):]
+    return np.concatenate([eq, gt[np.argsort(a[gt], kind="stable")]])
 
 
 def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
                  rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=None,
-                 refresh=12, final_sigma=0.9, domain=None):
+                 refresh=12, final_sigma=0.9, domain=None, pick="argsort"):
     """u (0..1), net (1-px channels) -> u with the hillslopes dissected.
 
     spacing: stop when no cell is farther than this from channel or cut.
     depth of each cut = min(depth0, rel_frac * relief spanned by its path).
     max_cuts: the carve budget.  None (default) scales it with the map's
     AREA, 500 cuts per 128x128 (36x36 -> 39), the same rule generate() uses;
-    pass an int to set it by hand."""
+    pass an int to set it by hand.
+
+    pick: how the few most undissected cells are listed before one is drawn.
+    "argsort" (the default, and what the frozen baseline uses) takes the last
+    8 of np.argsort -- whose order among TIED distances is up to numpy's sort,
+    which differs between CPUs (with and without AVX-512 the terrain differs
+    by ~0.07), and which costs a full sort per refresh, i.e. time growing as
+    the square of the map's area.  "stable" takes the same 8 cells with ties
+    broken by position (exactly np.argsort(kind="stable")[-8:]) in linear
+    time: the same on every machine, and fast on big maps -- but a different
+    terrain from "argsort", so making it the default means re-freezing the
+    baseline."""
+    if pick not in ("argsort", "stable"):
+        raise ValueError(f"pick must be 'argsort' or 'stable', not {pick!r}")
     H, W = u.shape
     if max_cuts is None:
         max_cuts = int(500 * (H * W) / (128 * 128))
@@ -114,7 +152,8 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
                 break
             # the most undissected cells; one is drawn below with a little
             # jitter among the top few
-            flat = np.argsort(d.ravel())[-8:]
+            flat = (np.argsort(d.ravel())[-8:] if pick == "argsort"
+                    else _top_stable(d.ravel(), 8))
         r, c = np.unravel_index(int(rng.choice(flat)), d.shape)
         if d[r, c] <= spacing:
             continue
