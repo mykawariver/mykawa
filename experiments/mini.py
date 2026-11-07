@@ -1290,22 +1290,36 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
     _g_cache = []
 
     def blur_d(dd):
-        # gaussian_filter(d, 2.0), recomputed only round the cells of d that
-        # changed since the last call (see _blur_update); `d` is always
-        # rebound, never written into, so the cached array stays valid.
-        G = (_blur_update(dd, *_g_cache, 2.0) if _g_cache
+        # np.gradient(gaussian_filter(d, 2.0)), the blur recomputed only
+        # round the cells of d that changed since the last call (see
+        # _blur_update) and nothing recomputed when d is the same array; `d`
+        # is always rebound, never written into, so the cache stays valid.
+        if _g_cache and dd is _g_cache[0]:
+            return _g_cache[2]
+        G = (_blur_update(dd, *_g_cache[:2], 2.0) if _g_cache
              else ndi.gaussian_filter(dd, 2.0))
-        _g_cache[:] = [dd, G]
-        return G
+        if _g_cache and G is _g_cache[1]:
+            grad = _g_cache[2]           # the same field: the same gradient
+        else:
+            grad = np.gradient(G)
+        _g_cache[:] = [dd, G, grad]
+        return grad
 
+
+
+    _corr = {}                       # the valley field, by network size
 
     def dist_net():
+        # the network only grows, so its cell count says whether it changed
+        n_net = int(np.count_nonzero(net))
         if not _dn_cache:
-            _dn_cache[:] = [ndi.distance_transform_edt(~net), net.copy()]
-        else:
-            dist, snap = _dn_cache
+            _dn_cache[:] = [ndi.distance_transform_edt(~net), net.copy(),
+                            n_net]
+        elif _dn_cache[2] != n_net:
+            dist, snap, _n = _dn_cache
             rr_, cc_ = np.nonzero(net & ~snap)
-            _dn_cache[:] = [_refresh_distance(dist, [(rr_, cc_)]), net.copy()]
+            _dn_cache[:] = [_refresh_distance(dist, [(rr_, cc_)]), net.copy(),
+                            n_net]
         return _dn_cache[0]
 
     look_v = []                      # cached `look` per tip (see the refresh)
@@ -1324,6 +1338,16 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
     # is 1 and the cadence is 12.
     every = 12 * max(1, int(round(H * W / (N * N))))
     for it in range(int(3000 * H * W / (N * N))):
+        # An iteration that starts with no tips (and no net0) rebuilds every
+        # field from the network alone and re-seeds one head from it.  If
+        # that head retires on the spot, nothing has changed and no random
+        # number was drawn (integers(0, 1) draws none), so every later
+        # iteration would repeat this one exactly until the budget ran out:
+        # the loop stops there instead, with the same result.  (It happens --
+        # the farthest dry point can be one the re-seeded head always gives
+        # up on; seed 1 at n=128 spins its last ~100 iterations that way, a
+        # 4.5 x 24 km map over 100 000.)
+        idle = not tips and net0 is None
         if it % 12 == 0 or (not tips and net0 is None):   # refresh the field
             # `not tips` does not force a refresh in a RESTART round (net0
             # given).  There the heads deplete early, so the loop spends most
@@ -1341,12 +1365,22 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 # nearest VALLEY: a floor is drained by the river that made it,
                 # and growth goes elsewhere.  The same field is the forbidden
                 # zone `_walk` refuses to enter.
-                accn = tree_accum(net, S) / float(acc_ref or 1.0)
-                hwc = float(corridor) * np.where(
-                    net, 1.0 + (floor_px - 1.0) * np.sqrt(accn), 0.0)
-                forbid, _idx, cf = cone_floor(net, hwc, field=True,
-                                              cache=_cf_cache)
-                d = np.maximum(-cf, 0.0)
+                # The valley field depends on the network alone (S changes
+                # only where the network grows), so when not one cell has been
+                # added since it was last built -- a head re-seeded at land it
+                # cannot reach, retiring at once, over and over -- it is the
+                # same field, and is reused rather than rebuilt.
+                n_net = int(np.count_nonzero(net))
+                if _corr.get("n") == n_net:
+                    hwc, forbid, d = _corr["fields"]
+                else:
+                    accn = tree_accum(net, S) / float(acc_ref or 1.0)
+                    hwc = float(corridor) * np.where(
+                        net, 1.0 + (floor_px - 1.0) * np.sqrt(accn), 0.0)
+                    forbid, _idx, cf = cone_floor(net, hwc, field=True,
+                                                  cache=_cf_cache)
+                    d = np.maximum(-cf, 0.0)
+                    _corr.update(n=n_net, fields=(hwc, forbid, d))
                 # ...but STOP on the centreline distance.  The valley field is
                 # the right thing to steer by -- a floor is drained, so do not
                 # dig it -- and the wrong thing to STOP by.  Stopping on the
@@ -1383,7 +1417,7 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 # a distance transform there would dominate the run time.
                 _dn, _nearest = ndi.distance_transform_edt(
                     ~net, return_indices=True)
-            gr, gc = np.gradient(blur_d(d))
+            gr, gc = blur_d(d)
             # `look` reads `d`, which only changes here, so its value per tip
             # is cached and refreshed with the field instead of being recomputed
             # for every tip on every iteration.  Identical ordering (Python's
@@ -1472,12 +1506,17 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
         # A top-4 selection is NOT a valid shortcut -- the sort also reorders
         # the survivors, and with tied values that order decides the next
         # step's ranking (it would change parameter zero).
+        idle = idle and len(tips) == 1
         k_pop = int(rng.integers(0, max(1, min(4, len(tips)))))
         r, c, a, run, lrun, bud, sd = tips.pop(k_pop)
         neg_v.pop(k_pop)
         if look_v.pop(k_pop) <= ell:
+            if idle:
+                break                     # a fixed point: see `idle` above
             continue                          # nothing left ahead: head retires
         if run >= bud:
+            if idle:
+                break
             continue                          # this stream has run its course
         ga = np.arctan2(at(gr, r, c), at(gc, r, c))     # up the gradient
         a = np.arctan2(0.65 * np.sin(a) + 0.35 * np.sin(ga),
