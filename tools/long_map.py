@@ -5,8 +5,9 @@ trunk runs the length of the map; the figure is the stage 1 network (line
 width ~ sqrt(drainage)) over the stage 3 terrain after stage 2 = poisson and
 after stage 2 = two_bones.
 
-    python -m tools.long_map --stage1 flood      # ~2 min (stage 3 dominates)
-    python -m tools.long_map --stage1 headward   # ~8 min: stage 1 alone ~170 s
+    python -m tools.long_map --stage1 flood      # ~20 s on 4 CPUs
+    python -m tools.long_map --stage1 headward   # ~80 s: stage 1 alone ~39 s,
+                                                 # run once per stage 2 method
 
 October 2026, seed 1:
                  channel   median dist   largest gap   heads
