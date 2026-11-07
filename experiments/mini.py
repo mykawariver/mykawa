@@ -245,21 +245,34 @@ def cone_floor(band, hw, step=0.5, field=False, cache=None):
             J = (jy.astype(np.intp) * W + jx).ravel()
             if cache is not None:
                 cache[keys[k]] = (mem, d, J)
-        return hflat[J] - d, J
+        return d, J
 
-    best = np.full(H * W, -np.inf)
-    own = np.arange(H * W)
     # The level sets are independent, so their transforms run side by side
-    # (scipy releases the GIL); they are combined below in the same order as
-    # before -- the first level to reach the best value keeps the cell -- so
+    # (scipy releases the GIL).  The combination is per cell, so it runs on
+    # bands of the map side by side, each taking the levels in the original
+    # order -- the first level to reach the best value keeps the cell -- so
     # the result does not depend on the threads.
-    for res in _pmap(level, range(len(his))):
-        if res is None:
-            continue
-        v, J = res
-        m = v > best
-        np.copyto(best, v, where=m)
-        np.copyto(own, J, where=m)
+    levels = [res for res in _pmap(level, range(len(his))) if res is not None]
+    best = np.empty(H * W)
+    own = np.empty(H * W, np.intp)
+    nb = max(1, min(16, (H * W) // 65536))
+    cuts = np.linspace(0, H * W, nb + 1).astype(np.intp)
+
+    def combine(i):
+        sl = slice(cuts[i], cuts[i + 1])
+        b = np.full(sl.stop - sl.start, -np.inf)
+        o = np.arange(sl.start, sl.stop)
+        for d, J in levels:
+            Js = J[sl]
+            v = hflat[Js] - d[sl]
+            m = v > b
+            np.copyto(b, v, where=m)
+            np.copyto(o, Js, where=m)
+        best[sl] = b
+        own[sl] = o
+
+    for _ in _pmap(combine, range(nb)):
+        pass
     if cache is not None:
         for key in set(cache) - set(keys):
             del cache[key]                 # levels this call no longer has
