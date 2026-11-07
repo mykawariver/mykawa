@@ -50,11 +50,11 @@
 |---|---|---|
 | 3 km × 12 km：`generate(stage1="flood")` 1回 | 約49秒 | 約11秒 |
 | 3 km × 12 km：`gen_headward` の第1段と第2段 | 約164秒 | 約26秒 |
-| `python -m tools.long_map --stage1 flood` | 約2分 | 約16秒 |
-| `python -m tools.long_map --stage1 headward` | 約8分 | 約40秒 |
-| 4.5 km × 24 km：`long_map --stage1 flood` | （未計測） | 約2分（`--pick stable` で約50秒） |
-| 4.5 km × 24 km：`long_map --stage1 headward`、シード1（空回りで止まる例） | 1時間以上 | 約2分 |
-| 4.5 km × 24 km：`long_map --stage1 headward`、シード2（健全に育つ例） | （未計測） | 約7分 |
+| `python -m tools.long_map --stage1 flood` | 約2分 | 約14秒 |
+| `python -m tools.long_map --stage1 headward` | 約8分 | 約37秒 |
+| 4.5 km × 24 km：`long_map --stage1 flood` | （未計測） | 約2分（`--pick stable` で約55秒） |
+| 4.5 km × 24 km：`long_map --stage1 headward`、シード1（空回りで止まる例） | 約2時間 | 約1分50秒 |
+| 4.5 km × 24 km：`long_map --stage1 headward`、シード2（健全に育つ例） | （未計測） | 約6分 |
 
 - 主な中身：
   - **第3段（`finish_micro`）：**
@@ -73,7 +73,7 @@
   - USAGE.md の図32枚がバイト単位で同じ
   - 3 km × 12 km の網と地形が同じ（flood は第2段の2つの方式とも）
   - ほかに7つの条件（`trend`、`reseed=False`、`corridor=0`、調整値を0から外したもの）でも同じ
-  - 3 km × 12 km の `long_map` の図が、高速化の前のコードで描いたものとバイト単位で同じ
+  - 3 km × 12 km の `long_map` の図（flood）と、4.5 km × 24 km の図（headward、シード1）が、高速化の前のコードで描いたものとバイト単位で同じ
 - 4.5 km × 24 km の `gen_headward` で、いちばん時間がかかっているのは、`cone_floor` の中の scipy の距離変換です（使い回せない組の分）。これ以上減らすには、scipy の同点の選び方を自分で再現する必要があります。ビット単位で同じことを保証できないので、手を付けていません。
 - `cone_floor` のスレッドの数は、環境変数 `MYKAWA_THREADS` で決められます（1 で並列なし）。数を変えても結果は同じです。
 - **注意：** `docs/images/flood_3x12km_s1.png` と `headward_3x12km_s1.png` は、今の `tools/long_map.py` で描き直すと、画素が少し違います（約6000〜7000画素）。高速化の前のコード（`048fd74`）で描いても同じように違うので、原因は高速化ではありません。図を描いたあとに、スクリプトか環境が変わったのだと思います。
