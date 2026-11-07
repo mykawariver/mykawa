@@ -53,7 +53,6 @@ def priority_flood(z, domain=None):
     whole array."""
     import heapq
     H, W = z.shape
-    out = np.full((H, W), np.inf)
     done = np.zeros((H, W), bool)
     pq = []
     if domain is None:
@@ -66,22 +65,41 @@ def priority_flood(z, domain=None):
         touch = ~(pad[:-2, 1:-1] & pad[2:, 1:-1] &
                   pad[1:-1, :-2] & pad[1:-1, 2:])
         seed = dom & touch                 # land on the coast
-    for r, c in zip(*np.where(seed)):
-        r, c = int(r), int(c)
-        heapq.heappush(pq, (float(z[r, c]), r, c))
-        done[r, c] = True
-        out[r, c] = z[r, c]
+    # The queue runs on flat indices into a one-cell padded grid whose
+    # border is marked done.  The heap key (z, flat index) orders exactly as
+    # (z, r, c) does, so cells come off in the same order and the eps chain
+    # gives the same floats as the plain row/column loop.
+    W2 = W + 2
+    zp = np.zeros((H + 2, W2))
+    zp[1:-1, 1:-1] = z
+    zl = zp.ravel().tolist()
+    dn = np.ones((H + 2, W2), bool)
+    dn[1:-1, 1:-1] = done
+    rs, cs = np.where(seed)
+    fl = ((rs + 1) * W2 + (cs + 1)).tolist()
+    dn[rs + 1, cs + 1] = True
+    dl = dn.ravel().tolist()
+    ol = [np.inf] * ((H + 2) * W2)
+    for i in fl:
+        heapq.heappush(pq, (float(zl[i]), i))
+        ol[i] = zl[i]
+    nbs = [dr * W2 + dc for dr, dc in _NB]
     eps = 1e-4
+    push, pop = heapq.heappush, heapq.heappop
     while pq:
-        zv, r, c = heapq.heappop(pq)
-        for dr, dc in _NB:
-            rr, cc = r + dr, c + dc
-            if rr < 0 or rr >= H or cc < 0 or cc >= W or done[rr, cc]:
+        zv, i = pop(pq)
+        zn = zv + eps
+        for o in nbs:
+            j = i + o
+            if dl[j]:
                 continue
-            nz = max(float(z[rr, cc]), zv + eps)
-            out[rr, cc] = nz
-            done[rr, cc] = True
-            heapq.heappush(pq, (nz, rr, cc))
+            nz = zl[j]
+            if nz < zn:
+                nz = zn
+            ol[j] = nz
+            dl[j] = True
+            push(pq, (nz, j))
+    out = np.array(ol).reshape(H + 2, W2)[1:-1, 1:-1].copy()
     return out if domain is None else np.where(domain, out, np.nan)
 
 

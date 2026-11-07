@@ -143,15 +143,17 @@ def catchment_sum(parent, depth, w=None):
 
 
 def outlet_of(parent):
-    """The outlet (flat index) each cell drains to."""
-    anc = np.arange(len(parent))
-    p = parent.copy()
+    """The outlet (flat index) each cell drains to.
+
+    By pointer jumping: each cell's pointer goes to its parent (an outlet to
+    itself), then is replaced by its pointer's pointer until nothing moves --
+    log(depth) rounds instead of one per step down a long trunk."""
+    anc = np.where(parent >= 0, parent, np.arange(len(parent)))
     while True:
-        live = p >= 0
-        if not live.any():
+        nxt = anc[anc]
+        if np.array_equal(nxt, anc):
             return anc
-        anc[live] = p[live]
-        p[live] = parent[p[live]]
+        anc = nxt
 
 
 def _floor_of(raw, parent, depth, W, floor_px, corridor, acc_ref):

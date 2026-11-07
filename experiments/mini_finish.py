@@ -44,6 +44,31 @@ def _blur(a, sigma, dom):
     return np.where(dom, num / np.maximum(den, 1e-12), np.nan)
 
 
+def _refresh_distance(d, painted):
+    """d = the distance to a set of cells; painted = (rows, cols) arrays of
+    cells added to the set since.  Returns the distance to the grown set.
+
+    A new cell can only lower d where it is nearer than d already is, i.e.
+    within d.max() of it, so the transform runs on the box around the new
+    cells widened by that much, and the result is min'd in.  Exact: every
+    distance is the square root of an integer sum of squares, the same float
+    whichever way it is found."""
+    if not painted:
+        return d
+    H, W = d.shape
+    R = int(np.ceil(d.max())) + 1
+    rows = np.concatenate([p[0] for p in painted])
+    cols = np.concatenate([p[1] for p in painted])
+    r0, r1 = max(0, int(rows.min()) - R), min(H, int(rows.max()) + R + 1)
+    c0, c1 = max(0, int(cols.min()) - R), min(W, int(cols.max()) + R + 1)
+    seed = np.ones((r1 - r0, c1 - c0), bool)
+    seed[rows - r0, cols - c0] = False
+    d = d.copy()
+    np.minimum(d[r0:r1, c0:c1], ndi.distance_transform_edt(seed),
+               out=d[r0:r1, c0:c1])
+    return d
+
+
 def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
                  rel_frac=0.6, smooth=1.5, max_steps=70, max_cuts=None,
                  refresh=12, final_sigma=0.9, domain=None):
@@ -71,14 +96,23 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
     aux = band.copy()                  # channels + centrelines already cut
     if dom is not None:
         aux |= ~dom                    # the sea is already drained
+    # d, the distance to aux, is refreshed every `refresh` cuts.  Between
+    # refreshes it is held fixed, so the candidate list taken from it is too;
+    # and since aux only grows, a refresh is min(d, distance to the cells
+    # painted since the last one) -- see _refresh_distance.  Both are exact:
+    # the result is bit for bit what a full transform each time gives.
     d = ndi.distance_transform_edt(~aux)
+    painted = []                       # centrelines painted since a refresh
+    q70 = np.quantile(u, 0.70)         # u is not changed by the loop
     for it in range(max_cuts):
         if it % refresh == 0:
-            d = ndi.distance_transform_edt(~aux)
+            d = _refresh_distance(d, painted)
+            painted = []
             if d.max() <= spacing:
                 break
-        # the most undissected cell, with a little jitter among the top few
-        flat = np.argsort(d.ravel())[-8:]
+            # the most undissected cells; one is drawn below with a little
+            # jitter among the top few
+            flat = np.argsort(d.ravel())[-8:]
         r, c = np.unravel_index(int(rng.choice(flat)), d.shape)
         if d[r, c] <= spacing:
             continue
@@ -105,6 +139,7 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
         # path that drains -- a cut that stops mid-slope would break the
         # contour nesting and can pond.
         aux[pr, pc] = True
+        painted.append((pr, pc))
         if not drains:
             continue
         # smooth the course before stamping: the raw streamline inherits the
@@ -127,7 +162,7 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
         # attacks the summit -- the fix for the round domes), but a cut whose
         # head sits mid-slope must fade in from zero, or the V appears out of
         # nowhere and reads as a computational error.  Real micro-relief is only legitimate where a process starts -- a crest.
-        h0 = 0.3 if u[path[0]] > np.quantile(u, 0.70) else 0.0
+        h0 = 0.3 if u[path[0]] > q70 else 0.0
         # GRADE TO THE MOUTH: a gully bed cannot cut below the bed it drains
         # into, so no cell of the course is cut below the z of the cell the
         # path reaches (a channel, or an earlier cut).
