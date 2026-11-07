@@ -59,6 +59,8 @@ def _refresh_distance(d, painted):
     R = int(np.ceil(d.max())) + 1
     rows = np.concatenate([p[0] for p in painted])
     cols = np.concatenate([p[1] for p in painted])
+    if not rows.size:
+        return d
     r0, r1 = max(0, int(rows.min()) - R), min(H, int(rows.max()) + R + 1)
     c0, c1 = max(0, int(cols.min()) - R), min(W, int(cols.max()) + R + 1)
     seed = np.ones((r1 - r0, c1 - c0), bool)

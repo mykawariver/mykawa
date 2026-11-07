@@ -163,7 +163,23 @@ def hollow_heads(net, px, d=None):
     return out
 
 
-def cone_floor(band, hw, step=0.5, field=False):
+_POOL = []
+
+
+def _pmap(f, xs):
+    """map(f, xs) in order, on a thread pool when there is more than one CPU.
+    For work that releases the GIL (scipy's distance transform) and does not
+    depend on the order it runs in.  MYKAWA_THREADS=1 makes it serial."""
+    n = int(os.environ.get("MYKAWA_THREADS", min(8, os.cpu_count() or 1)))
+    if n <= 1:
+        return map(f, xs)
+    if not _POOL:
+        from concurrent.futures import ThreadPoolExecutor
+        _POOL.append(ThreadPoolExecutor(n))
+    return _POOL[0].map(f, xs)
+
+
+def cone_floor(band, hw, step=0.5, field=False, cache=None):
     """The valley floor as a CONE DILATION of the channels.
 
         floor(x) = max over channels y of [ hw(y) - |x - y| ] >= 0
@@ -187,28 +203,68 @@ def cone_floor(band, hw, step=0.5, field=False):
     With field=True a third item comes back: max(hw - distance) itself, whose
     negative part is the DISTANCE TO THE NEAREST VALLEY (not to the nearest
     centreline) -- which is what "undrained land" has to mean once valleys have
-    width, and what gen_headward grows against."""
+    width, and what gen_headward grows against.
+
+    cache: a dict owned by a caller that calls this again and again on a
+    growing network (gen_headward).  A level set's transform depends only on
+    WHICH cells are in it, not on their hw, so it is kept per level and
+    reused when the next call puts exactly the same cells there -- as the
+    trunk's levels mostly do.  The result is the same with or without it."""
     H, W = band.shape
     hwv = np.where(band, hw, 0.0)
     hmax = float(hwv.max())
-    iy, ix = np.mgrid[0:H, 0:W]
     if hmax <= 0:
+        iy, ix = np.mgrid[0:H, 0:W]
         z = np.zeros((H, W), bool)
         return (z, (iy, ix), np.full((H, W), -np.inf)) if field else (z, (iy, ix))
     step = max(float(step), hmax / 24.0)     # <=24 transforms, whatever hmax is
-    best = np.full((H, W), -np.inf)
-    lo = 0.0
-    for hi in np.arange(step, hmax + step, step):
-        sub = band & (hwv > lo) & (hwv <= hi + 1e-12)
-        lo = hi
-        if not sub.any():
+    his = np.arange(step, hmax + step, step)
+    los = [0.0] + list(his[:-1])
+    keys = [(float(los[k]), float(his[k])) for k in range(len(his))]
+    # Everything runs on flat indices.  A level's cells are picked out of the
+    # channel cells (hw > lo >= 0 only holds on the band), and its owner is
+    # kept as one flat index -- the same cells, values and order of
+    # comparison as a whole-map mask and an (iy, ix) pair.
+    hflat = hwv.ravel()
+    bc = np.flatnonzero(hflat > 0)
+    hv = hflat[bc]
+
+    def level(k):
+        mem = bc[(hv > los[k]) & (hv <= his[k] + 1e-12)]
+        if not mem.size:
+            return None
+        hit = None if cache is None else cache.get(keys[k])
+        if hit is not None and np.array_equal(hit[0], mem):
+            d, J = hit[1:]
+        else:
+            outside = np.ones(H * W, bool)
+            outside[mem] = False
+            d, (jy, jx) = ndi.distance_transform_edt(
+                outside.reshape(H, W), return_indices=True)
+            d = d.ravel()
+            J = (jy.astype(np.intp) * W + jx).ravel()
+            if cache is not None:
+                cache[keys[k]] = (mem, d, J)
+        return hflat[J] - d, J
+
+    best = np.full(H * W, -np.inf)
+    own = np.arange(H * W)
+    # The level sets are independent, so their transforms run side by side
+    # (scipy releases the GIL); they are combined below in the same order as
+    # before -- the first level to reach the best value keeps the cell -- so
+    # the result does not depend on the threads.
+    for res in _pmap(level, range(len(his))):
+        if res is None:
             continue
-        d, (jy, jx) = ndi.distance_transform_edt(~sub, return_indices=True)
-        v = hwv[jy, jx] - d
+        v, J = res
         m = v > best
-        best = np.where(m, v, best)
-        iy = np.where(m, jy, iy)
-        ix = np.where(m, jx, ix)
+        np.copyto(best, v, where=m)
+        np.copyto(own, J, where=m)
+    if cache is not None:
+        for key in set(cache) - set(keys):
+            del cache[key]                 # levels this call no longer has
+    iy, ix = np.divmod(own.reshape(H, W), W)
+    best = best.reshape(H, W)
     return ((best >= 0.0, (iy, ix), best) if field
             else (best >= 0.0, (iy, ix)))
 
@@ -225,27 +281,40 @@ def tree_accum(net, S):
     (ACC_REF_NET), not baseline.ACC_REF."""
     H, W = net.shape
     Sp = np.where(net & np.isfinite(S), S, np.inf)
-    pad = np.pad(Sp, 1, constant_values=np.inf)
-    best = np.full((H, W), np.inf)
-    par = np.full((H, W), -1, np.int64)
+    ok = net & np.isfinite(Sp)
+    # Everything below runs on the channel cells alone: a cell's receiver is
+    # itself a channel cell (it has a finite S), the neighbours are scanned in
+    # the same order with the same strict test, and each sum is a whole
+    # number of cells -- the same tree and the same numbers as a whole-map
+    # sweep.
+    cells = np.flatnonzero(ok.ravel())
+    W2 = W + 2
+    pad = np.pad(Sp, 1, constant_values=np.inf).ravel()
+    rr, cc = np.divmod(cells, W)
+    pc = (rr + 1) * W2 + (cc + 1)
+    best = np.full(len(cells), np.inf)
+    par = np.full(len(cells), -1, np.int64)
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
                 continue
-            nb = pad[1 + dr:1 + dr + H, 1 + dc:1 + dc + W]
+            nb = pad[pc + dr * W2 + dc]
             m = nb < best
             best = np.where(m, nb, best)
-            rr, cc = np.where(m)
-            par[rr, cc] = (rr + dr) * W + (cc + dc)
-    par = np.where(best < Sp, par, -1)      # the outlet has no receiver
-    ok = net & np.isfinite(Sp)
-    acc = np.ones(H * W)
-    pf = par.ravel()
-    cells = np.flatnonzero(ok.ravel())
-    cells = cells[np.argsort(-Sp.ravel()[cells], kind="stable")]
-    for k in cells:
-        if pf[k] >= 0:
-            acc[pf[k]] += acc[k]
+            par[m] = cells[m] + dr * W + dc
+    own = Sp.ravel()[cells]
+    par = np.where(best < own, par, -1)     # the outlet has no receiver
+    order = np.argsort(-own, kind="stable")
+    cells, par = cells[order], par[order]
+    pos = np.full(H * W, -1, np.int64)
+    pos[cells] = np.arange(len(cells))
+    up = np.where(par >= 0, pos[np.maximum(par, 0)], -1).tolist()
+    a = [1.0] * len(cells)
+    for k, p in enumerate(up):
+        if p >= 0:
+            a[p] += a[k]
+    acc = np.zeros(H * W)
+    acc[cells] = a
     return np.where(ok, acc.reshape(H, W), 0.0)
 
 
@@ -726,6 +795,51 @@ _FOLD = [0, None, None]   # diagnostic: rejects, S field, raw net
 # A generator is (rng, N) -> 1-px bool centreline.  Keep each one SHORT: if a
 # rule needs more than ~40 lines to state, it is not a rule, it is a pipeline.
 
+def _fold_refuses(others, S, cap, ri, ci, s_k, full):
+    """The no-folding test of `_walk` at cell (ri, ci):
+
+        sn = S at the channel cell of `others` nearest (ri, ci), dd its distance
+        refuse  <=>  isfinite(sn) and dd > 0 and |s_k - sn| > cap * dd
+
+    with "nearest" as scipy's distance_transform_edt picks it.  The nearest
+    cells are found in a window around (ri, ci) that is widened until it is
+    sure to hold them all (a cell outside a window of half-width R is more
+    than R away).  When several cells tie for nearest, scipy's choice among
+    them could matter -- so the answer is taken from the window only when every
+    tied cell gives the same answer, and otherwise from the whole-map
+    transform, computed once per stroke into `full`.  Either way it is the
+    answer the whole-map transform gives."""
+    H, W = others.shape
+    R = 8
+    while True:
+        r0, r1 = max(0, ri - R), min(H, ri + R + 1)
+        c0, c1 = max(0, ci - R), min(W, ci + R + 1)
+        fy, fx = np.nonzero(others[r0:r1, c0:c1])
+        whole = r0 == 0 and c0 == 0 and r1 == H and c1 == W
+        if len(fy):
+            d2 = (fy + (r0 - ri)) ** 2 + (fx + (c0 - ci)) ** 2
+            m = int(d2.min())
+            if m <= R * R or whole:
+                break
+        elif whole:
+            m = None                 # no channel at all: scipy's own answer
+            break
+        R *= 2
+    if m is not None:
+        dd = np.sqrt(np.float64(m))  # = scipy's sqrt of the integer sum
+        k = d2 == m
+        sn = S[fy[k] + r0, fx[k] + c0]
+        votes = np.isfinite(sn) & (dd > 0) & (np.abs(s_k - sn) > cap * dd)
+        if votes.all() or not votes.any():
+            return bool(votes[0])
+    if not full:
+        full.append(ndi.distance_transform_edt(~others, return_indices=True))
+    do, (iyo, ixo) = full[0]
+    sn = S[iyo[ri, ci], ixo[ri, ci]]
+    dd = do[ri, ci]
+    return bool(np.isfinite(sn) and dd > 0 and abs(s_k - sn) > cap * dd)
+
+
 def _walk(net, r, c, ang, steps, rng, wander=0.5, stop_on_hit=False, sep=0,
           fold=None, s_here=0.0, forbid=None, hw0=0.0, domain=None):
     def s_here_k(k):
@@ -777,11 +891,12 @@ def _walk(net, r, c, ang, steps, rng, wander=0.5, stop_on_hit=False, sep=0,
         e = int(np.ceil(max(s, hw0))) + 1
         forbid = forbid.copy()
         forbid[max(0, r0 - e):r0 + e + 1, max(0, c0 - e):c0 + e + 1] = False
-    if fold is not None:
-        # measure against the network EXCLUDING this stroke and its mouth.  The
-        # nearest channel to a growing tip is otherwise its own fresh trail,
-        # whose S equals the tip's own, so the test would never fire.
-        do, (iyo, ixo) = ndi.distance_transform_edt(~others, return_indices=True)
+    # fold: measured against the network EXCLUDING this stroke and its mouth
+    # (`others`).  The nearest channel to a growing tip is otherwise its own
+    # fresh trail, whose S equals the tip's own, so the test would never fire.
+    # The test is only ever read at the stroke's own few cells, so it is
+    # answered there (_fold_refuses) instead of from a whole-map transform.
+    fold_full = []                   # the whole-map transform, if ever needed
     for k in range(steps):
         ang += rng.normal(0, wander)
         r2, c2 = r + np.sin(ang), c + np.cos(ang)
@@ -801,9 +916,7 @@ def _walk(net, r, c, ang, steps, rng, wander=0.5, stop_on_hit=False, sep=0,
             return None                         # inside another valley's floor
         if fold is not None:
             S, cap = fold
-            sn = S[iyo[ri, ci], ixo[ri, ci]]
-            dd = do[ri, ci]
-            if np.isfinite(sn) and dd > 0 and abs(s_here_k(k) - sn) > cap * dd:
+            if _fold_refuses(others, S, cap, ri, ci, s_here_k(k), fold_full):
                 _FOLD[0] += 1
                 return None                     # would curl back on itself
         if stop_on_hit and k >= 2 and net[ri, ci]:
@@ -1105,6 +1218,21 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
 
     forbid, hwc = None, np.zeros((H, W))
     dstop = np.zeros((H, W))
+    # The distance to the network, refreshed by the cells painted since the
+    # last call (the network only grows here); exactly the whole-map transform.
+    from experiments.mini_finish import _refresh_distance
+    _dn_cache = []
+    _cf_cache = {}                   # cone_floor's level transforms
+
+    def dist_net():
+        if not _dn_cache:
+            _dn_cache[:] = [ndi.distance_transform_edt(~net), net.copy()]
+        else:
+            dist, snap = _dn_cache
+            rr_, cc_ = np.nonzero(net & ~snap)
+            _dn_cache[:] = [_refresh_distance(dist, [(rr_, cc_)]), net.copy()]
+        return _dn_cache[0]
+
     look_v = []                      # cached `look` per tip (see the refresh)
     neg_v = []                       # -look_v, kept ascending for bisect
     # THE ITERATION BUDGET SCALES WITH AREA (the same scale contract baseline
@@ -1141,7 +1269,8 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 accn = tree_accum(net, S) / float(acc_ref or 1.0)
                 hwc = float(corridor) * np.where(
                     net, 1.0 + (floor_px - 1.0) * np.sqrt(accn), 0.0)
-                forbid, _idx, cf = cone_floor(net, hwc, field=True)
+                forbid, _idx, cf = cone_floor(net, hwc, field=True,
+                                              cache=_cf_cache)
                 d = np.maximum(-cf, 0.0)
                 # ...but STOP on the centreline distance.  The valley field is
                 # the right thing to steer by -- a floor is drained, so do not
@@ -1153,14 +1282,14 @@ def gen_headward(rng, n=N, ell=5.0, split=0.45, split_p=0.0, sep=2,
                 # undissected.  The Poisson term lifts a divide as the SQUARE
                 # of its gap, so a 38% wider hole becomes a 1.9x higher smooth
                 # dome: too many contours away from the riverbed.
-                dstop = ndi.distance_transform_edt(~net)
+                dstop = dist_net()
             elif corridor:
                 # between corridor refreshes: the cheap fields still track the
                 # network every 12 steps, only the valley cone is held.
-                dstop = ndi.distance_transform_edt(~net)
+                dstop = dist_net()
                 d = np.maximum(np.minimum(d, dstop), 0.0)
             else:
-                d = dstop = ndi.distance_transform_edt(~net)
+                d = dstop = dist_net()
             if reserve is not None:
                 # RESERVED RIDGE GROUND.  Land held for a divide of a coarser
                 # level is treated as ALREADY DRAINED: d = 0 there, so no head
