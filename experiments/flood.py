@@ -170,6 +170,52 @@ def catchment_sum(parent, depth, w=None):
     return acc
 
 
+def _jump_to(parent, stop):
+    """For every cell, the first cell at or below it (towards the outlet)
+    where stop is True, or its outlet."""
+    n = len(parent)
+    f = np.where(stop | (parent < 0), np.arange(n), parent)
+    while True:
+        g = f[f]
+        if np.array_equal(g, f):
+            return f
+        f = g
+
+
+def divides(parent, acc, H, W, a_min):
+    """The divides between the rivers of at least a_min cells of catchment,
+    on the drainage tree `parent`: every cell joins the link (the reach
+    between two junctions) of the first such river below it, and a divide
+    is where two cells side by side join different links -- except two
+    links of which one drains into the other: that boundary crosses the
+    valley at the junction, it is no ridge.  Returns a bool (H, W) map."""
+    n = H * W
+    on = acc >= a_min
+    entry = _jump_to(parent, on)
+    pj = parent >= 0
+    nkids = np.bincount(parent[pj & on], minlength=n)
+    junction = np.zeros(n, bool)
+    junction[pj] = nkids[parent[pj]] >= 2
+    link = _jump_to(parent, junction | ~on)
+    lab = np.where(on[entry], link[entry], -1)
+    lpar = np.full(n, -1)
+    roots_ = lab >= 0
+    pl = parent[link[roots_]]
+    lpar_cells = np.where(pl >= 0, lab[np.maximum(pl, 0)], -1)
+    lpar[link[roots_]] = lpar_cells
+    lab = lab.reshape(H, W)
+    off = (parent < 0).reshape(H, W) & (acc < a_min).reshape(H, W)
+    d = np.zeros((H, W), bool)
+    for sl_a, sl_b in (((slice(None), slice(None, -1)), (slice(None), slice(1, None))),
+                       ((slice(None, -1), slice(None)), (slice(1, None), slice(None)))):
+        a, b = lab[sl_a], lab[sl_b]
+        k = (a != b) & (a >= 0) & (b >= 0) & ~off[sl_a] & ~off[sl_b]
+        k &= (lpar[np.maximum(a, 0)] != b) & (lpar[np.maximum(b, 0)] != a)
+        d[sl_a] |= k
+        d[sl_b] |= k
+    return d
+
+
 def outlet_of(parent):
     """The outlet (flat index) each cell drains to.
 
@@ -258,7 +304,8 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
               funnel_w=4.0, cut_ell=8.0, regional=0.0, big_s=32.0,
               calm=0.0, align=0.0, align_beta=None, align_reg=0.0,
-              calm_q=(50.0, 95.0), crest_thr=0.0, crest_bg=0.0):
+              calm_q=(50.0, 95.0), crest_thr=0.0, crest_bg=0.0,
+              ridge_room=0.0, ridge_a=7300.0, ridge_w=10.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -295,7 +342,14 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
              exp(crest_thr) times the catchment -- ground without channels
              along the ridges, which stage 2 then raises higher;
       crest_bg: px; when > 0 the crests are judged relative to the large
-             relief smoothed at this scale, not by its absolute height."""
+             relief smoothed at this scale, not by its absolute height.
+      ridge_room: the same, but on the REAL divides (TWO PASSES): the
+             divides between the rivers of at least ridge_a cells (7300 =
+             1 km2 at 11.7 m/px) are taken from the flood tree, and within
+             about ridge_w px of them a head needs exp(ridge_room) times
+             the catchment.  The tree is the same, so only the heads near
+             the ridges go; the noise high points, which the regional slope
+             lets the trunks run through, play no part."""
     if p50 is None:
         p50 = P50_FIT * P50_PER_ELL * float(ell)
     H, W = (int(n), int(n)) if shape is None else (int(shape[0]), int(shape[1]))
@@ -424,6 +478,10 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         # are left without channels (the bisection below then puts the
         # heads it takes from them on the lower ground)
         thr = thr * np.exp(float(crest_thr) * crest).ravel()
+    if ridge_room:
+        dv = divides(parent, acc, H, W, float(ridge_a))
+        near = np.exp(-(ndi.distance_transform_edt(~dv) / float(ridge_w)) ** 2)
+        thr = thr * np.exp(float(ridge_room) * near).ravel()
 
     # the stem cells: from each outlet along the largest tributary
     stem_cells = np.zeros(H * W, bool)
