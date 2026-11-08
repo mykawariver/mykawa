@@ -258,7 +258,7 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
               funnel_w=4.0, cut_ell=8.0, regional=0.0, big_s=32.0,
               calm=0.0, align=0.0, align_beta=None, align_reg=0.0,
-              calm_q=(50.0, 95.0), crest_thr=0.0):
+              calm_q=(50.0, 95.0), crest_thr=0.0, crest_bg=0.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -293,7 +293,9 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
       crest_thr: on the high ground of the large relief (calm_q: from
              which percentile to which it counts as crest) a head needs
              exp(crest_thr) times the catchment -- ground without channels
-             along the ridges, which stage 2 then raises higher."""
+             along the ridges, which stage 2 then raises higher;
+      crest_bg: px; when > 0 the crests are judged relative to the large
+             relief smoothed at this scale, not by its absolute height."""
     if p50 is None:
         p50 = P50_FIT * P50_PER_ELL * float(ell)
     H, W = (int(n), int(n)) if shape is None else (int(shape[0]), int(shape[1]))
@@ -314,8 +316,13 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
         big = ndi.gaussian_filter(h, big_s / 2.0, mode="reflect")
         # 0 below the calm_q[0] percentile of the large relief, 1 above
         # calm_q[1]
-        q50, q95 = np.percentile(big, calm_q)
-        crest = np.clip((big - q50) / max(q95 - q50, 1e-9), 0.0, 1.0)
+        # crest_bg > 0: high RELATIVE to the large relief around it (the
+        # relief smoothed again at crest_bg px taken off), so every ridge
+        # counts, not just the half of the map the longest waves lift
+        rel = big - ndi.gaussian_filter(big, crest_bg / 2.0, mode="reflect") \
+            if crest_bg else big
+        q50, q95 = np.percentile(rel, calm_q)
+        crest = np.clip((rel - q50) / max(q95 - q50, 1e-9), 0.0, 1.0)
         small = h - big
         sd = small.std() or 1.0
         if align:
