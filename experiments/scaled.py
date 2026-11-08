@@ -138,7 +138,8 @@ def envelope(pin, zpin, sc, mask=None):
 def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             f=F_POISSON, floor_tilt=0.02, hill="envelope", sc=0.3,
             sc_var=0.3, crest_sigma=1.5, rng=None, floor_close=2, a0=0.1,
-            stream_var=0.0, theta_var=0.0, lith_var=0.0):
+            stream_var=0.0, theta_var=0.0, lith_var=0.0, ridge_C=28.0,
+            ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -228,11 +229,19 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     dom = None
     if labels is not None and (np.asarray(labels) < 0).any():
         dom = np.asarray(labels) >= 0
+    ridge_info = {}
     if hill == "two_bones":
         from experiments.ridges import ridge_bone
         R, h = ridge_bone(net, pin, np.where(pin, zn, 0.0))
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
                                poisson_f=0.0)
+        ridge_info = dict(R=R, h=h)
+    elif hill == "ridges":
+        R, h = ridge_lines(net, roots, pin, zn, C=ridge_C, q=ridge_q,
+                           cap=ridge_cap, w0=ridge_w0)
+        u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
+                               poisson_f=0.0)
+        ridge_info = dict(R=R, h=h)
     elif hill == "poisson":
         z0 = np.zeros_like(pin)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), z0, np.zeros((H, W)),
@@ -252,16 +261,17 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             wgt = np.where(pin, 0.0, wgt)
             u = u * (1 - wgt) + ub * wgt
             u = np.maximum(u, np.where(pin, zn, -np.inf))
-    return u, dict(area=amap, floor=floor, zc=zmap)
+    return u, dict(area=amap, floor=floor, zc=zmap, pin=pin, zn=zn, **ridge_info)
 
 
 def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     regional=2.0, ell=5.0, floor_px=4.0, finish=True,
                     ks=KS, theta=THETA, s_max=S_MAX, w1=W1, f=F_POISSON,
-                    z0=Z0, finish_kw=None, hill="two_bones", sc=0.3, sc_var=0.3,
+                    z0=Z0, finish_kw=None, hill="ridges", sc=0.3, sc_var=0.3,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
-                    lith_var=0.3):
+                    lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
+                    ridge_w0=1.5):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -293,7 +303,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
     u, info = solve_m(net, roots, labels, ks, theta, s_max, w1, f, hill=hill,
                       sc=sc, sc_var=sc_var, crest_sigma=crest_sigma, rng=rng,
                       floor_close=floor_close, stream_var=stream_var,
-                      theta_var=theta_var, lith_var=lith_var)
+                      theta_var=theta_var, lith_var=lith_var, ridge_C=ridge_C,
+                      ridge_q=ridge_q, ridge_cap=ridge_cap, ridge_w0=ridge_w0)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
@@ -384,3 +395,86 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
     for (r, c, *_x) in roots:
         net2[int(r), int(c)] = True
     return net2
+
+
+def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
+                smooth_n=8, w0=1.5, p=0.35, edge=0.25):
+    """The ridge network as the DUAL of the river network, with heights that
+    grow with the size of the rivers a ridge separates.
+
+    At each level A_k (km2) the network is cut into links of rivers >= A_k
+    (cut at the confluences), every cell joins the link its nearest channel
+    cell drains into at that level, and the boundaries between links are the
+    divides of that level.  A divide between two big rivers is still a
+    boundary at the high levels; its ORDER is the highest level at which it
+    is.  Boundaries of regions are closed lines, so the ridges are continuous
+    by construction -- no gaps for the surface to sag through into a saddle.
+
+    Height: the higher of the rivers either side + C * A_order**q [m], then
+    averaged along the ridge (smooth_n passes) and capped so that no ridge
+    stands more than `cap` (gradient) above the valley ground around it.
+    Returns (R, h)."""
+    from tools.terrain_metrics import _jump_until
+    net = np.asarray(net, bool)
+    H, W = net.shape
+    rr, cc, idx, parent, step, area = channel_area(net, roots)
+    _d, (ir, ic) = ndi.distance_transform_edt(~net, return_indices=True)
+    near = idx[ir, ic]
+    if levels is None:
+        levels = 0.01 * 3.0 ** np.arange(12)
+        levels = levels[levels < area.max()]
+    order = np.full((H, W), -1.0)
+    n = len(rr)
+    for Ak in levels:
+        on = area >= Ak
+        entry = _jump_until(parent, on)
+        kid = (parent >= 0) & on
+        nk = np.bincount(parent[kid], minlength=n)
+        stop = np.zeros(n, bool)
+        pj = parent >= 0
+        stop[pj] = nk[parent[pj]] >= 2
+        stop |= ~pj
+        link = _jump_until(parent, stop | ~on)
+        lab = link[entry[near]]
+        # the link below each link (its id is the node just above its
+        # junction, so the junction is its parent).  A link and the one it
+        # flows into meet ACROSS a valley at the confluence: that boundary is
+        # not a divide.
+        plink = np.where(pj, link[np.where(pj, parent, 0)], -1)
+
+        def divide(a, b):
+            return (a != b) & (plink[a] != b) & (plink[b] != a)
+        d = np.zeros((H, W), bool)
+        e = divide(lab[:, :-1], lab[:, 1:])
+        d[:, :-1] |= e; d[:, 1:] |= e
+        e = divide(lab[:-1, :], lab[1:, :])
+        d[:-1, :] |= e; d[1:, :] |= e
+        order[d] = Ak
+    R = (order > 0) & ~pin
+    # thin the 2-px boundary to a line
+    from skimage.morphology import skeletonize
+    R = skeletonize(R) & ~pin
+    # the rivers either side: the highest nearest-channel z around the cell
+    zr = zn[ir, ic] if zn is not None else np.zeros((H, W))
+    zr = ndi.maximum_filter(np.where(net, zn, 0.0)[ir, ic], size=3)
+    A_o = ndi.maximum_filter(np.where(order > 0, order, 0.0), size=3)
+    h = np.where(R, zr + C * np.maximum(A_o, 1e-3) ** q, np.nan)
+    from experiments.ridges import smooth_on_ridge
+    h = np.nan_to_num(smooth_on_ridge(h, R, n=smooth_n))
+    if cap:
+        env = envelope(pin, np.where(pin, zn, 0.0), cap)
+        h = np.minimum(h, env)
+    if w0:
+        # BIG RIDGES ARE BROAD.  A ridge of order A gets a rounded crest of
+        # half-width w0 * A**p px: pinned as a parabola falling from the
+        # crest line at `edge` gradient at the band's edge.  Small spurs
+        # stay knife-thin.
+        dR, (jy, jx) = ndi.distance_transform_edt(~R, return_indices=True)
+        w = w0 * np.maximum(A_o, 1e-6) ** p
+        wn = w[jy, jx]
+        hn = h[jy, jx]
+        band = (dR <= wn) & (wn >= 1.0) & ~pin
+        zb = hn - edge * PX_M * dR ** 2 / (2.0 * np.maximum(wn, 1e-9))
+        h = np.where(R, h, np.where(band, zb, 0.0))
+        R = R | band
+    return R, np.where(R, h, 0.0)
