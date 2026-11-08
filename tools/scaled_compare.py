@@ -8,7 +8,9 @@ edge), the summary numbers of tools/terrain_metrics, averaged over seeds:
 
     isolated   knobs standing on their own, per km2
     hier       log-log slope of divide height against the river size it
-               separates (bigger = more hierarchy)
+               separates (bigger = more hierarchy); noisy
+    hand       log-log slope of the mean height of the ground above the
+               river >= A it drains to, A = 0.03..3 km2 (all cells; stable)
     W1, W10    valley floor width [px] at 1 and >= 10 km2
     sin_s      sinuosity over 32 steps, rivers < 0.1 km2
     sin_L      sinuosity over 32 steps, rivers >= 3 km2
@@ -66,6 +68,7 @@ def summary(m):
     return dict(
         isolated=m["isolated"],
         hier=m["divide_slope"],
+        hand=m["hand_slope"],
         W1=m["floor_w"].get(1.0, np.nan),
         W10=mean_over(m["floor_w"], (10.0, 30.0)),
         sin_s=mean_over(m["sinuosity"][32], small),
@@ -108,7 +111,7 @@ def main(argv=None):
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     ap.add_argument("--fig", default=None)
     a = ap.parse_args(argv)
-    keys = ["isolated", "hier", "W1", "W10", "sin_s", "sin_L", "rough", "dens"]
+    keys = ["isolated", "hier", "hand", "W1", "W10", "sin_s", "sin_L", "rough", "dens"]
     print(f"{'':16}" + "".join(f"{k:>9}" for k in keys) + f"{'t':>7}")
     for size in ("128", "long"):
         for which in ("old", "new"):

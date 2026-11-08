@@ -220,6 +220,20 @@ def measure(u, net, roots, meters=False):
         d &= ~net
         div_h.append(float(np.median(hand[d])) if d.sum() > 20 else np.nan)
     div_h = np.array(div_h)
+    # HAND_SLOPE: the same levels, but over EVERY land cell -- the mean height
+    # of the ground above the river of size >= A_k it drains to.  Stable
+    # where the divide medians rest on a few hundred cells.
+    hand_m = []
+    for Ak in LEVELS:
+        on = area >= Ak
+        if on.sum() < 10 or (~on).all():
+            hand_m.append(np.nan); continue
+        entry = _jump_until(parent, on)
+        hand_m.append(float(np.mean(z - zc[entry[near]])))
+    hand_m = np.array(hand_m)
+    out["hand_mean"] = dict(zip(LEVELS.tolist(), np.round(hand_m, 4).tolist()))
+    k3 = LEVELS <= 3.0
+    out["hand_slope"] = _loglog_slope(LEVELS[k3], hand_m[k3])
     out["divide_h"] = dict(zip(LEVELS.tolist(), np.round(div_h, 4).tolist()))
     out["divide_slope"] = _loglog_slope(LEVELS, div_h)
 

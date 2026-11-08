@@ -139,7 +139,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             f=F_POISSON, floor_tilt=0.02, hill="envelope", sc=0.3,
             sc_var=0.3, crest_sigma=1.5, rng=None, floor_close=2, a0=0.1,
             stream_var=0.0, theta_var=0.0, lith_var=0.0, ridge_C=28.0,
-            ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5):
+            ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -238,7 +238,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         ridge_info = dict(R=R, h=h)
     elif hill == "ridges":
         R, h = ridge_lines(net, roots, pin, zn, C=ridge_C, q=ridge_q,
-                           cap=ridge_cap, w0=ridge_w0)
+                           cap=ridge_cap, w0=ridge_w0, h0=ridge_h0)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
                                poisson_f=0.0)
         ridge_info = dict(R=R, h=h)
@@ -271,7 +271,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
                     lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
-                    ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None):
+                    ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
+                    ridge_h0=0.0):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -308,7 +309,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       sc=sc, sc_var=sc_var, crest_sigma=crest_sigma, rng=rng,
                       floor_close=floor_close, stream_var=stream_var,
                       theta_var=theta_var, lith_var=lith_var, ridge_C=ridge_C,
-                      ridge_q=ridge_q, ridge_cap=ridge_cap, ridge_w0=ridge_w0)
+                      ridge_q=ridge_q, ridge_cap=ridge_cap, ridge_w0=ridge_w0,
+                      ridge_h0=ridge_h0)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
@@ -402,7 +404,7 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
 
 
 def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
-                smooth_n=8, w0=1.5, p=0.35, edge=0.25):
+                smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0):
     """The ridge network as the DUAL of the river network, with heights that
     grow with the size of the rivers a ridge separates.
 
@@ -462,7 +464,7 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
     zr = zn[ir, ic] if zn is not None else np.zeros((H, W))
     zr = ndi.maximum_filter(np.where(net, zn, 0.0)[ir, ic], size=3)
     A_o = ndi.maximum_filter(np.where(order > 0, order, 0.0), size=3)
-    h = np.where(R, zr + C * np.maximum(A_o, 1e-3) ** q, np.nan)
+    h = np.where(R, zr + h0 + C * np.maximum(A_o, 1e-3) ** q, np.nan)
     from experiments.ridges import smooth_on_ridge
     h = np.nan_to_num(smooth_on_ridge(h, R, n=smooth_n))
     if cap:
