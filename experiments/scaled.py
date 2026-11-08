@@ -135,6 +135,73 @@ def envelope(pin, zpin, sc, mask=None):
     return (d[:N] - off).reshape(H, W)
 
 
+def cap_channels(rr, cc, parent, zc, area, H, W, s_cap, ratio=3.0):
+    """NO RIVER STANDS HIGH ABOVE ITS NEIGHBOURS OF ITS OWN SIZE.  Flint's
+    law integrated from the outlet makes a river as high as its path is
+    long: a tributary that winds far round before it joins climbs well
+    above a river of the same size just across the divide, and its basin
+    stands up as a plateau with a scarp along the divide.  A real divide
+    would move until the two sides balance (chi across a divide).
+
+    Here the channel heights z are the largest that keep, everywhere,
+      z <= Flint's z;
+      z(i) <= z(j) + s_cap * S(A) * distance over the map, for the channel
+        cells j of a similar size (area within a factor ratio either way),
+        S(A) the Flint slope of that size -- two headwater gullies side by
+        side may differ by what their steep beds climb between them, two
+        big rivers by little.  (Among ALL channels the bound would flatten
+        every steep headwater against its own trunk; with one slope for
+        every size it sank whole basins by 200 m.)
+      z(i) <= z(j) for every j upstream of i -- a capped head pulls its
+        stream down with it; a reach below it goes flat, never uphill.
+    Every bound is "z(i) <= z(j) + a cost >= 0", so the answer is one
+    shortest-path problem: a source joined to each channel cell at its
+    Flint z, an edge of cost 0 from a cell to the cell it drains to, and
+    for each size class a layer of the grid (edge cost s * step length)
+    that the cells of the classes either side feed and the class's own
+    cells read.  One Dijkstra -- no seed can raise one basin above the
+    rest."""
+    from scipy import sparse
+    from scipy.sparse import csgraph
+    from experiments.flood import grid_edges
+    n = len(rr)
+    la = np.floor(np.log(np.maximum(area, 1e-6)) / np.log(ratio)).astype(int)
+    ks = np.unique(la)
+    A, B = grid_edges(H, W)
+    ra, ca = np.divmod(A, W); rb, cb = np.divmod(B, W)
+    ln = np.hypot(ra - rb, ca - cb) * PX_M
+    G = H * W
+    rows, cols, wts = [], [], []
+    # drains-to edges (cost 0 -> a tiny epsilon keeps them in the sparse
+    # matrix; it adds < 1e-6 m over a 1e4-cell path)
+    k = parent >= 0
+    rows.append(np.flatnonzero(k)); cols.append(parent[k])
+    wts.append(np.full(int(k.sum()), 1e-10))
+    cell = rr * W + cc
+    for li, kk in enumerate(ks):
+        base = n + li * G
+        sk = float(s_cap) * float(slope_of(ratio ** (kk + 0.5)))
+        # the grid layer, both ways
+        rows += [base + A, base + B]; cols += [base + B, base + A]
+        wts += [sk * ln, sk * ln]
+        feed = np.flatnonzero(np.abs(la - kk) <= 1)
+        rows.append(feed); cols.append(base + cell[feed])
+        wts.append(np.full(len(feed), 1e-10))
+        own = np.flatnonzero(la == kk)
+        rows.append(base + cell[own]); cols.append(own)
+        wts.append(np.full(len(own), 1e-10))
+    src = n + len(ks) * G
+    off = 1.0 - float(zc.min())
+    rows.append(np.full(n, src)); cols.append(np.arange(n))
+    wts.append(zc + off)
+    N = src + 1
+    M = sparse.coo_matrix((np.concatenate(wts),
+                           (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(N, N)).tocsr()
+    d = csgraph.dijkstra(M, directed=True, indices=src)
+    return np.minimum(d[:n] - off, zc)
+
+
 def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             f=F_POISSON, floor_tilt=0.02, hill="envelope", sc=0.3,
             sc_var=0.3, crest_sigma=1.5, rng=None, floor_close=2, a0=0.1,
@@ -142,7 +209,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
             plate_ridge="cap", plate_base="zero", plate_rise=3.0,
-            ridge_lower=30.0, ridge_border=False, ridge_slope=0.05):
+            ridge_lower=30.0, ridge_border=False, ridge_slope=0.05,
+            chan_cap=0.0):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -233,6 +301,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
                             0.0)
             z0 = top[grp] if plate_base == "top" else 0.0
             zc[grp] = np.where(k, np.minimum(top[grp], z_up), z0)
+    if chan_cap:
+        zc = cap_channels(rr, cc, parent, zc, area, H, W, chan_cap)
     zmap = np.zeros((H, W)); zmap[rr, cc] = zc
     # a strip of ground left between two floors (a tributary running beside
     # the trunk before it joins) would rise as a knife-edge at the threshold
@@ -315,7 +385,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
                     plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
-                    ridge_slope=0.05):
+                    ridge_slope=0.05, chan_cap=1.0):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -357,7 +427,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       plate_b=plate_b, plate_tilt=plate_tilt,
                       plate_ridge=plate_ridge, plate_base=plate_base,
                       plate_rise=plate_rise, ridge_lower=ridge_lower,
-                      ridge_border=ridge_border, ridge_slope=ridge_slope)
+                      ridge_border=ridge_border, ridge_slope=ridge_slope,
+                      chan_cap=chan_cap)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
