@@ -30,6 +30,8 @@ python -m experiments.baseline --check
 
 ## 2026-11-08 のスレッド：大きな地図のための新しい生成器（`experiments/scaled.py`）
 
+- **保存点 `scaled-v1` = コミット `eb35faa`**（flood × two_bones、②の作業を始める前）。戻るときは `git checkout eb35faa`。ローカルにだけ同じ名前のタグがあります（タグのプッシュは、この環境では通りませんでした）。
+
 基準の地形（`baseline.generate`）には触れず、別の生成器を作りました。`--check` の差は 0 のままです。
 
 - **物差し：** `tools/terrain_metrics.py`。お手本の DEM を使わず、5つの特徴を集水面積（km²）ごとに数えます。
