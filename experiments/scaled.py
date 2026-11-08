@@ -141,7 +141,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             stream_var=0.0, theta_var=0.0, lith_var=0.0, ridge_C=28.0,
             ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
-            plate_ridge="cap"):
+            plate_ridge="cap", plate_base="zero", plate_rise=3.0):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -218,13 +218,20 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         top = plate[rr, cc] - plate_d1 * np.maximum(Aeff, 1e-4) ** plate_b
         from experiments.flood import depth_of, _levels
         dep = depth_of(parent)
+        # plate_base="zero": the outlets sit at 0 m and the Flint rise binds
+        # (deep cuts far up every river).  "top": the outlets too sit at
+        # their own depth below the plate, and the rise from below only
+        # smooths the step at a confluence (plate_rise x the Flint slope),
+        # so a river lies about D(A) below the plate wherever it is.
         zc = np.zeros(len(rr))
+        Sr = S * (plate_rise if plate_base == "top" else 1.0)
         for grp in _levels(dep)[::-1]:                 # outlets first
             p_ = parent[grp]
             k = p_ >= 0
-            z_up = np.where(k, zc[np.where(k, p_, 0)] + S[grp] * step[grp] * PX_M,
+            z_up = np.where(k, zc[np.where(k, p_, 0)] + Sr[grp] * step[grp] * PX_M,
                             0.0)
-            zc[grp] = np.where(k, np.minimum(top[grp], z_up), 0.0)
+            z0 = top[grp] if plate_base == "top" else 0.0
+            zc[grp] = np.where(k, np.minimum(top[grp], z_up), z0)
     zmap = np.zeros((H, W)); zmap[rr, cc] = zc
     # a strip of ground left between two floors (a tributary running beside
     # the trunk before it joins) would rise as a knife-edge at the threshold
@@ -303,7 +310,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
                     ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
                     ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
-                    plate_tilt=0.005, plate_ridge="cap"):
+                    plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
+                    plate_rise=3.0):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -343,7 +351,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       ridge_q=ridge_q, ridge_cap=ridge_cap, ridge_w0=ridge_w0,
                       ridge_h0=ridge_h0, zmode=zmode, plate_d1=plate_d1,
                       plate_b=plate_b, plate_tilt=plate_tilt,
-                      plate_ridge=plate_ridge)
+                      plate_ridge=plate_ridge, plate_base=plate_base,
+                      plate_rise=plate_rise)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
