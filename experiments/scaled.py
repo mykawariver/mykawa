@@ -271,7 +271,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
                     lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
-                    ridge_w0=1.5):
+                    ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -287,7 +287,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
     if stage1 == "flood":
         net, labels = gen_flood(rng, roots=roots, shape=(H, W), ell=ell,
                                 floor_px=floor_px, labels=True,
-                                regional=regional)
+                                regional=regional, **(flood_kw or {}))
     else:
         from experiments.mini import gen_headward
         from experiments.baseline import hydraulic_reach
@@ -296,6 +296,10 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                                    shape=(H, W), reach=reach,
                                    floor_px=floor_px, labels=True,
                                    trend=trend)
+    if regrow:
+        from experiments.mini import basin_labels
+        net = regrow_small(net, roots, rng, **(regrow_kw or {}))
+        labels = basin_labels(net, roots)
     if straighten:
         from experiments.mini import basin_labels
         net = smooth_network(net, roots, c=straighten, s0=s0)
@@ -478,3 +482,82 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
         h = np.where(R, h, np.where(band, zb, 0.0))
         R = R | band
     return R, np.where(R, h, 0.0)
+
+
+def regrow_small(net, roots, rng, a_keep=0.2, sc=0.3, amp=12.0, sigma=2.0,
+                 max_steps=400):
+    """Redraw the small rivers as water would run on the ground the big ones
+    make.
+
+    The flood tree follows the lowest pass of random ground, so a headwater
+    meanders with the noise -- the "worm" texture of the uplands.  A real
+    headwater runs straight down its hillslope.  Here the rivers draining at
+    least a_keep km2 are kept as a skeleton; a smooth provisional surface
+    rises from it (the skeleton's own Flint profile + sc per metre of
+    distance + gentle noise of amplitude amp m, blurred by sigma px); and
+    from every head of the original network a streamline is traced down
+    that surface's gradient until it meets the skeleton or a streamline
+    already drawn.  The heads keep the original drainage density.  Returns
+    the new 1-px network."""
+    from skimage.draw import line
+    from skimage import morphology as skmo
+    from experiments.mini import rejoin_after_thinning
+    from experiments.flood import noise
+    net = np.asarray(net, bool)
+    H, W = net.shape
+    rr, cc, idx, parent, step, area = channel_area(net, roots)
+    keep = area >= a_keep
+    skel = np.zeros((H, W), bool)
+    skel[rr[keep], cc[keep]] = True
+    for (r, c, *_x) in roots:
+        skel[int(r), int(c)] = True
+    has_kid = np.zeros(len(rr), bool)
+    has_kid[parent[parent >= 0]] = True
+    heads = np.flatnonzero(~has_kid & ~keep)
+    # provisional surface
+    z = integrate_profile(parent, step, slope_of(area))
+    zmap = np.zeros((H, W)); zmap[rr, cc] = z
+    d, (iy, ix) = ndi.distance_transform_edt(~skel, return_indices=True)
+    nz = noise(rng, H, W, smin=6.0, beta=0.5)
+    nz = (nz - nz.mean()) / (nz.std() or 1.0)
+    zp = zmap[iy, ix] + sc * d * PX_M + amp * nz
+    zp = ndi.gaussian_filter(zp, sigma)
+    gy, gx = np.gradient(zp)
+    gn = np.hypot(gy, gx) + 1e-12
+    out = skel.copy()
+    # highest heads first, so later ones can join the streams drawn before
+    heads = heads[np.argsort(-zp[rr[heads], cc[heads]], kind="stable")]
+    for h in heads:
+        y, x = float(rr[h]), float(cc[h])
+        pts = [(rr[h], cc[h])]
+        for _ in range(max_steps):
+            ri, ci = int(round(y)), int(round(x))
+            if out[ri, ci] and len(pts) > 1:
+                break
+            # step one px down the gradient; on a flat or a pit fall back
+            # to the lowest neighbour
+            g = gn[ri, ci]
+            ny, nx = y - gy[ri, ci] / g, x - gx[ri, ci] / g
+            nr, nc = int(round(ny)), int(round(nx))
+            if not (0 <= nr < H and 0 <= nc < W) or zp[nr, nc] >= zp[ri, ci]:
+                r0, r1 = max(0, ri - 1), min(H, ri + 2)
+                c0, c1 = max(0, ci - 1), min(W, ci + 2)
+                win = zp[r0:r1, c0:c1]
+                k = np.unravel_index(np.argmin(win), win.shape)
+                nr, nc = r0 + k[0], c0 + k[1]
+                if zp[nr, nc] >= zp[ri, ci]:
+                    break                       # a true pit: give up
+                ny, nx = float(nr), float(nc)
+            y, x = ny, nx
+            pts.append((nr, nc))
+        else:
+            continue
+        if not out[pts[-1]]:
+            continue                            # never reached the network
+        for (a0, b0), (a1, b1) in zip(pts[:-1], pts[1:]):
+            lr, lc = line(a0, b0, a1, b1)
+            out[lr, lc] = True
+    net2 = rejoin_after_thinning(out, skmo.skeletonize(out), roots)
+    for (r, c, *_x) in roots:
+        net2[int(r), int(c)] = True
+    return net2
