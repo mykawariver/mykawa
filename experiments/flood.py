@@ -73,6 +73,34 @@ def noise(rng, H, W, smin=4.0, beta=0.5):
     return h / h.std()
 
 
+def oriented_noise(rng, H, W, s, ratio, theta, nbins=8):
+    """Gaussian-smoothed white noise whose blobs are `ratio` times longer
+    along the local direction theta (radians, an (H, W) field; theta and
+    theta + pi are the same) than across it (std s px).  One white field,
+    filtered in Fourier space at nbins orientations and blended linearly
+    between the two nearest; zero mean, unit std."""
+    wf = np.fft.rfft2(rng.standard_normal((H, W)))
+    ky = np.fft.fftfreq(H)[:, None]
+    kx = np.fft.rfftfreq(W)[None, :]
+    phis = np.arange(nbins) * np.pi / nbins
+    # position of theta between the bins, mod pi
+    t = np.mod(theta, np.pi) / (np.pi / nbins)
+    k0 = np.floor(t).astype(int) % nbins
+    fr = t - np.floor(t)
+    out = np.zeros((H, W))
+    sa, sc = float(s) * float(ratio), float(s)
+    for k, ph in enumerate(phis):
+        ka = ky * np.sin(ph) + kx * np.cos(ph)
+        kc = -ky * np.cos(ph) + kx * np.sin(ph)
+        g = np.fft.irfft2(wf * np.exp(-2 * np.pi ** 2 * (sa ** 2 * ka ** 2
+                                                         + sc ** 2 * kc ** 2)),
+                          s=(H, W))
+        g = (g - g.mean()) / (g.std() or 1.0)
+        wgt = np.where(k0 == k, 1.0 - fr, 0.0) + np.where((k0 + 1) % nbins == k, fr, 0.0)
+        out += wgt * g
+    return (out - out.mean()) / (out.std() or 1.0)
+
+
 def grid_edges(H, W, mask=None):
     """The 8-neighbour grid as edge lists (a, b), each pair once."""
     idx = np.arange(H * W).reshape(H, W)
@@ -228,7 +256,9 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=4.0,
               rim_l=1.5, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
               stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
-              funnel_w=4.0, cut_ell=8.0, regional=0.0):
+              funnel_w=4.0, cut_ell=8.0, regional=0.0, big_s=32.0,
+              calm=0.0, align=0.0, align_beta=None, align_reg=0.0,
+              calm_q=(50.0, 95.0), crest_thr=0.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -240,7 +270,30 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     floor_px sets the valley-floor half-width a river keeps clear of other
     channels, hw = 1 + (floor_px - 1) * sqrt(A / acc_ref), A in channel
     cells upstream -- the corridor rule of gen_headward, applied here after
-    the fact (corridor=0 turns it off)."""
+    the fact (corridor=0 turns it off).
+
+    SHAPING THE RANDOM GROUND (all off by default; the ground then is the
+    plain noise above, draw for draw).  The noise has no structure at any
+    scale, so the flood draws an even net everywhere and a divide falls
+    wherever the noise happens to be high: ridges are left over, not made.
+    Split the ground at big_s px into the large relief (the ridges and the
+    basins between them) and the small-scale part (which picks where the
+    small valleys go):
+      calm   0..1: on the high ground of the large relief the small-scale
+             part is damped by up to this factor -- smooth crests shed water
+             in diverging sheets, so the heads stay a hillslope below them
+             and the crests are left without channels;
+      align  >= 1: the small-scale part is redrawn as blobs this many times
+             longer down the large relief's slope than across it, so the
+             small valleys run straight down off the ridges instead of
+             following the noise sideways (0 = off).  align_beta: the
+             spectral weight of its octaves (default: beta); align_reg:
+             how much of the regional tilt steers the blobs (0: with it
+             they all point at the outlet and the valleys run parallel);
+      crest_thr: on the high ground of the large relief (calm_q: from
+             which percentile to which it counts as crest) a head needs
+             exp(crest_thr) times the catchment -- ground without channels
+             along the ridges, which stage 2 then raises higher."""
     if p50 is None:
         p50 = P50_FIT * P50_PER_ELL * float(ell)
     H, W = (int(n), int(n)) if shape is None else (int(shape[0]), int(shape[1]))
@@ -251,6 +304,39 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     ix = np.arange(W)[None, :]
 
     h = noise(rng, H, W, smin, beta)
+    shaped = bool(calm or align or crest_thr)
+    if regional and shaped:
+        seed = np.ones((H, W), bool)
+        for (r, c, *_rest) in roots:
+            seed[int(r), int(c)] = False
+        reg = float(regional) * ndi.distance_transform_edt(seed) / 100.0
+    if shaped:
+        big = ndi.gaussian_filter(h, big_s / 2.0, mode="reflect")
+        # 0 below the calm_q[0] percentile of the large relief, 1 above
+        # calm_q[1]
+        q50, q95 = np.percentile(big, calm_q)
+        crest = np.clip((big - q50) / max(q95 - q50, 1e-9), 0.0, 1.0)
+        small = h - big
+        sd = small.std() or 1.0
+        if align:
+            # the slope of the large relief, by default without the regional
+            # tilt: with it every blob points at the outlet and the small
+            # valleys run parallel down the whole map
+            bigr = big + (align_reg * reg if regional else 0.0)
+            gy, gx = np.gradient(ndi.gaussian_filter(bigr, big_s / 4.0))
+            th = np.arctan2(gy, gx)
+            ab = beta if align_beta is None else align_beta
+            small = np.zeros((H, W))
+            s = smin
+            while s < big_s:
+                small += (s ** ab) * oriented_noise(rng, H, W, s, align, th)
+                s *= 2
+            small = small / (small.std() or 1.0)
+        else:
+            small = small / sd
+        if calm:
+            small = small * (1.0 - float(calm) * crest)
+        h = big + sd * small
     if regional:
         # A REGIONAL SLOPE TOWARDS THE OUTLETS.  The noise has no direction at
         # any scale, so a big river wanders as much as a small one.  Real
@@ -263,8 +349,14 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
             seed[int(r), int(c)] = False
         h = h + float(regional) * ndi.distance_transform_edt(seed) / 100.0
     if fine:
-        g = ndi.gaussian_filter(rng.standard_normal((H, W)), fine_s)
-        h += fine * g / g.std()
+        if align:
+            g = oriented_noise(rng, H, W, fine_s, align, th)
+        else:
+            g = ndi.gaussian_filter(rng.standard_normal((H, W)), fine_s)
+        if calm:
+            h += fine * (g / g.std()) * (1.0 - float(calm) * crest)
+        else:
+            h += fine * g / g.std()
     if funnel:
         # each outlet sits at the foot of a valley that runs INLAND along its
         # heading (deep at the mouth, fading over funnel_l, funnel_w wide).
@@ -319,6 +411,12 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     acc = catchment_sum(parent, depth)
     thr = (1.0 - edge_a * np.exp(-ndi.distance_transform_edt(~bnd)
                                  / edge_l)).ravel()
+    if crest_thr:
+        # ROOM ON THE RIDGES: a head needs exp(crest_thr) times the
+        # catchment on the high ground of the large relief, so the crests
+        # are left without channels (the bisection below then puts the
+        # heads it takes from them on the lower ground)
+        thr = thr * np.exp(float(crest_thr) * crest).ravel()
 
     # the stem cells: from each outlet along the largest tributary
     stem_cells = np.zeros(H * W, bool)

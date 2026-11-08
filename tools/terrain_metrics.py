@@ -237,6 +237,32 @@ def measure(u, net, roots, meters=False):
     out["divide_h"] = dict(zip(LEVELS.tolist(), np.round(div_h, 4).tolist()))
     out["divide_slope"] = _loglog_slope(LEVELS, div_h)
 
+    # ---- 2c. ridges with room: small valleys square to the big divides, and
+    # ground left without channels ----------------------------------------
+    # ORTH: for every channel node of a small river (0.01-0.3 km2), the
+    # cosine between its flow over 4 steps downstream and the downslope
+    # direction of the ground smoothed at 6 px (70 m) -- the slope of the
+    # ridges and big valley sides, with the small valleys themselves blurred
+    # out.  1 = every small valley runs straight down off its ridge;
+    # ~0 = they wander across it.  (A version measured against the
+    # direction away from the nearest big divide did not respond: the link
+    # boundaries of 2b also cut across valleys at the junctions.)
+    a4 = _ancestor(parent, 4)
+    fy, fx = (rr[a4] - rr).astype(float), (cc[a4] - cc).astype(float)
+    sy, sx = np.gradient(ndi.gaussian_filter(z, 6.0))
+    gy_, gx_ = -sy[rr, cc], -sx[rr, cc]
+    nf, ng = np.hypot(fy, fx), np.hypot(gy_, gx_)
+    k = (area >= 0.01) & (area < 0.3) & (nf > 0) & (ng > 0) & (depth >= 4)
+    out["orth"] = float(np.mean((fy * gy_ + fx * gx_)[k] / (nf * ng)[k])) \
+        if k.sum() > 20 else np.nan
+    # GAP: how far land gets from any channel -- the 99th percentile of the
+    # land-to-channel distance, in px, and its ratio to the median.  A
+    # uniform network keeps it near 3-4 x the median; ridges with room
+    # around their crests raise it.
+    dch = ndi.distance_transform_edt(~net)[~net]
+    out["gap99"] = float(np.percentile(dch, 99))
+    out["gap_ratio"] = float(np.percentile(dch, 99) / max(np.median(dch), 1e-9))
+
     # ---- 3. valley floor width vs area --------------------------------------
     gy, gx = np.gradient(z)
     slope = np.hypot(gy, gx)
@@ -288,6 +314,8 @@ def report(m):
                  + f"   slope small {m['R_slope_small']:.2f} large {m['R_slope_large']:.2f}")
     lines.append("2b divide height      " + "  ".join(f"{k:g}:{v:.3f}" for k, v in m["divide_h"].items())
                  + f"   slope {m['divide_slope']:.2f}")
+    lines.append(f"2c ridges             orth {m['orth']:.2f}   gap99 {m['gap99']:.1f} px"
+                 f"   gap99/median {m['gap_ratio']:.2f}")
     hdr = "   ".join(f"{a:g}" for a in AREA_EDGES[:-1])
     lines.append(f"   area bins (km2 >=) {hdr}")
     def row(name, d, fmt="{:.2f}"):
