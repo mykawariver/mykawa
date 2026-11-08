@@ -258,7 +258,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
 def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     regional=2.0, ell=5.0, floor_px=4.0, finish=True,
                     ks=KS, theta=THETA, s_max=S_MAX, w1=W1, f=F_POISSON,
-                    z0=Z0, finish_kw=None, hill="envelope", sc=0.3, sc_var=0.3,
+                    z0=Z0, finish_kw=None, hill="two_bones", sc=0.3, sc_var=0.3,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
                     lith_var=0.3):
