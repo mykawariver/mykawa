@@ -141,7 +141,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             stream_var=0.0, theta_var=0.0, lith_var=0.0, ridge_C=28.0,
             ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
-            plate_ridge="cap", plate_base="zero", plate_rise=3.0):
+            plate_ridge="cap", plate_base="zero", plate_rise=3.0,
+            ridge_lower=30.0, ridge_border=False, ridge_slope=0.05):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -275,7 +276,9 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     elif hill == "ridges":
         R, h = ridge_lines(net, roots, pin, zn, C=ridge_C, q=ridge_q,
                            cap=ridge_cap, w0=ridge_w0, h0=ridge_h0,
-                           plate=plate, plate_ridge=plate_ridge)
+                           plate=plate, plate_ridge=plate_ridge,
+                           lower=ridge_lower, border=ridge_border,
+                           r_slope=ridge_slope)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
                                poisson_f=0.0)
         ridge_info = dict(R=R, h=h)
@@ -311,7 +314,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
                     ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
                     plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
-                    plate_rise=3.0):
+                    plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
+                    ridge_slope=0.05):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -352,7 +356,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       ridge_h0=ridge_h0, zmode=zmode, plate_d1=plate_d1,
                       plate_b=plate_b, plate_tilt=plate_tilt,
                       plate_ridge=plate_ridge, plate_base=plate_base,
-                      plate_rise=plate_rise)
+                      plate_rise=plate_rise, ridge_lower=ridge_lower,
+                      ridge_border=ridge_border, ridge_slope=ridge_slope)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
@@ -447,7 +452,8 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
 
 def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
                 smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0, plate=None,
-                plate_ridge="cap"):
+                plate_ridge="cap", lower=30.0, border=False, r_slope=0.05,
+                main_A=3.0):
     """The ridge network as the DUAL of the river network, with heights that
     grow with the size of the rivers a ridge separates.
 
@@ -507,8 +513,49 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
     zr = zn[ir, ic] if zn is not None else np.zeros((H, W))
     zr = ndi.maximum_filter(np.where(net, zn, 0.0)[ir, ic], size=3)
     A_o = ndi.maximum_filter(np.where(order > 0, order, 0.0), size=3)
+    if plate is not None and border:
+        # THE MAP'S EDGE IS A DIVIDE (except at the outlets): on a map of one
+        # basin it is the main ridge itself.  Pin it at the plate, as a
+        # ridge of the highest order.
+        edge = np.zeros((H, W), bool)
+        edge[0, :] = edge[-1, :] = edge[:, 0] = edge[:, -1] = True
+        seed_o = np.ones((H, W), bool)
+        for (r, c, *_x) in roots:
+            seed_o[int(r), int(c)] = False
+        edge &= ndi.distance_transform_edt(seed_o) > 12
+        edge &= ~pin
+        R = R | edge
+        A_o = np.where(edge, 1e3, A_o)
     h = np.where(R, zr + h0 + C * np.maximum(A_o, 1e-3) ** q, np.nan)
-    if plate is not None:
+    if plate is not None and plate_ridge == "lowered":
+        # RIDGES ARE WORN DOWN TOO, the narrow ones most: a ridge of order A
+        # stands lower than the plate by `lower` m at A = 0.01 km2, falling
+        # to 0 at A >= 10 km2 (linear in log A).  The main divides keep the
+        # plate's height and the spurs fall away from them.
+        f = np.clip(np.log10(10.0 / np.maximum(A_o, 1e-6)) / 3.0, 0.0, 1.0)
+        h = np.where(R, plate - lower * f, np.nan)
+    elif plate is not None and plate_ridge == "graded":
+        # A RIDGE FALLS AWAY FROM THE MAIN DIVIDE.  The main ridges (the
+        # highest order present, and the map's edge with `border`) sit at the
+        # plate; every other ridge cell lies lower by r_slope per metre of
+        # path ALONG THE RIDGE NETWORK from them, so a spur descends from its
+        # root on the main ridge to its tip at the confluence -- the river
+        # profile turned upside down.  Never below the valley beside it.
+        from scipy import sparse
+        from scipy.sparse import csgraph
+        from experiments.flood import grid_edges
+        main = R & (A_o >= min(main_A, float(A_o[R].max())))
+        A_, B_ = grid_edges(H, W, R)
+        (ra_, ca_), (rb_, cb_) = np.divmod(A_, W), np.divmod(B_, W)
+        ln = np.hypot(ra_ - rb_, ca_ - cb_) * PX_M
+        G = sparse.coo_matrix((ln, (A_, B_)), shape=(H * W, H * W)).tocsr()
+        src = np.flatnonzero(main.ravel())
+        dist = csgraph.dijkstra(G, directed=False, indices=src,
+                                min_only=True).reshape(H, W)
+        dist = np.where(np.isfinite(dist), dist, np.nanmax(
+            np.where(np.isfinite(dist), dist, 0.0)))
+        h = np.where(R, np.maximum(plate - r_slope * dist, zr + 2.0), np.nan)
+    elif plate is not None:
         # what is left of the plate: no ridge stands above it.  "level"
         # pins every ridge AT the plate (the cap below lowers the ones the
         # valleys have eaten); "cap" keeps the ridge rule and only clips it
@@ -525,7 +572,7 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
         # crest line at `edge` gradient at the band's edge.  Small spurs
         # stay knife-thin.
         dR, (jy, jx) = ndi.distance_transform_edt(~R, return_indices=True)
-        w = w0 * np.maximum(A_o, 1e-6) ** p
+        w = w0 * np.clip(A_o, 1e-6, 10.0) ** p
         wn = w[jy, jx]
         hn = h[jy, jx]
         band = (dR <= wn) & (wn >= 1.0) & ~pin
