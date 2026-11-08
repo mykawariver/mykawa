@@ -139,7 +139,9 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             f=F_POISSON, floor_tilt=0.02, hill="envelope", sc=0.3,
             sc_var=0.3, crest_sigma=1.5, rng=None, floor_close=2, a0=0.1,
             stream_var=0.0, theta_var=0.0, lith_var=0.0, ridge_C=28.0,
-            ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0):
+            ridge_q=0.5, ridge_cap=0.45, ridge_w0=1.5, ridge_h0=0.0,
+            zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
+            plate_ridge="cap"):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -196,6 +198,33 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     onf[onf] &= area[own[onf]] > 2.0 * area[onf]
     S[onf] = slope_of(area[own[onf]], ksn[own[onf]], thn[own[onf]], s_max)
     zc = integrate_profile(parent, step, S)
+    plate = None
+    if zmode == "plate":
+        # CUT FROM ABOVE.  The land was one plate, and the rivers cut down
+        # into it: a river lies D(A) = plate_d1 * A**plate_b below the plate,
+        # bigger rivers deeper, and no ground stands above the plate.  The
+        # plate is level but for a gentle rise (plate_tilt) away from the
+        # outlets, and sits as high above the outlet as the map's biggest
+        # river cuts.  The Flint profile from below still binds: a channel
+        # can rise no faster than S(A) above the river it flows into, so a
+        # tributary steepens into its mouth instead of falling over a step.
+        seed_o = np.ones((H, W), bool)
+        for (r, c, *_x) in roots:
+            seed_o[int(r), int(c)] = False
+        plate = (plate_d1 * float(area.max()) ** plate_b
+                 + plate_tilt * ndi.distance_transform_edt(seed_o) * PX_M)
+        Aeff = area.copy()
+        Aeff[onf] = area[own[onf]]
+        top = plate[rr, cc] - plate_d1 * np.maximum(Aeff, 1e-4) ** plate_b
+        from experiments.flood import depth_of, _levels
+        dep = depth_of(parent)
+        zc = np.zeros(len(rr))
+        for grp in _levels(dep)[::-1]:                 # outlets first
+            p_ = parent[grp]
+            k = p_ >= 0
+            z_up = np.where(k, zc[np.where(k, p_, 0)] + S[grp] * step[grp] * PX_M,
+                            0.0)
+            zc[grp] = np.where(k, np.minimum(top[grp], z_up), 0.0)
     zmap = np.zeros((H, W)); zmap[rr, cc] = zc
     # a strip of ground left between two floors (a tributary running beside
     # the trunk before it joins) would rise as a knife-edge at the threshold
@@ -238,7 +267,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         ridge_info = dict(R=R, h=h)
     elif hill == "ridges":
         R, h = ridge_lines(net, roots, pin, zn, C=ridge_C, q=ridge_q,
-                           cap=ridge_cap, w0=ridge_w0, h0=ridge_h0)
+                           cap=ridge_cap, w0=ridge_w0, h0=ridge_h0,
+                           plate=plate, plate_ridge=plate_ridge)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
                                poisson_f=0.0)
         ridge_info = dict(R=R, h=h)
@@ -272,7 +302,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
                     lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
                     ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
-                    ridge_h0=0.0):
+                    ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
+                    plate_tilt=0.005, plate_ridge="cap"):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -310,7 +341,9 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       floor_close=floor_close, stream_var=stream_var,
                       theta_var=theta_var, lith_var=lith_var, ridge_C=ridge_C,
                       ridge_q=ridge_q, ridge_cap=ridge_cap, ridge_w0=ridge_w0,
-                      ridge_h0=ridge_h0)
+                      ridge_h0=ridge_h0, zmode=zmode, plate_d1=plate_d1,
+                      plate_b=plate_b, plate_tilt=plate_tilt,
+                      plate_ridge=plate_ridge)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
@@ -404,7 +437,8 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
 
 
 def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
-                smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0):
+                smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0, plate=None,
+                plate_ridge="cap"):
     """The ridge network as the DUAL of the river network, with heights that
     grow with the size of the rivers a ridge separates.
 
@@ -465,6 +499,12 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
     zr = ndi.maximum_filter(np.where(net, zn, 0.0)[ir, ic], size=3)
     A_o = ndi.maximum_filter(np.where(order > 0, order, 0.0), size=3)
     h = np.where(R, zr + h0 + C * np.maximum(A_o, 1e-3) ** q, np.nan)
+    if plate is not None:
+        # what is left of the plate: no ridge stands above it.  "level"
+        # pins every ridge AT the plate (the cap below lowers the ones the
+        # valleys have eaten); "cap" keeps the ridge rule and only clips it
+        h = np.where(R, plate, np.nan) if plate_ridge == "level" \
+            else np.minimum(h, plate)
     from experiments.ridges import smooth_on_ridge
     h = np.nan_to_num(smooth_on_ridge(h, R, n=smooth_n))
     if cap:
