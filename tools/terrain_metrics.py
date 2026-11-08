@@ -129,20 +129,31 @@ AREA_EDGES = np.array([0.01, 0.03, 0.1, 0.3, 1, 3, 10, 30, 100])   # km2
 LEVELS = np.array([0.03, 0.1, 0.3, 1.0, 3.0, 10.0])                # km2
 
 
-def measure(u, net, roots):
+def measure(u, net, roots, meters=False):
     u = np.asarray(u, float)
     net = np.asarray(net, bool)
     H, W = u.shape
     relief = float(u.max() - u.min())
-    z = (u - u.min()) / relief
+    # meters=True: u is in metres and every height below stays in metres;
+    # otherwise heights are fractions of the map's relief
+    z = (u - u.min()) if meters else (u - u.min()) / relief
     area_km2 = H * W * KM2
-    out = dict(shape=(H, W), area_km2=area_km2)
+    out = dict(shape=(H, W), area_km2=area_km2, meters=meters, relief=relief)
+    BUMP_H = (5.0, 10.0) if meters else (0.025, 0.05)
+    FLOOR_H = 2.0 if meters else 0.01
 
     rr, cc, idx, parent, step = network_tree(net, roots)
-    # every cell joins its nearest channel cell; drainage area accumulates
+    # every cell joins the channel cell its water reaches first (routed on
+    # the surface by a priority flood from the outlets; nearest channel cell
+    # where the route never meets the network); drainage area accumulates
     # those allocations down the tree
+    from experiments.flood import flood_tree
     _d, (ir, ic) = ndi.distance_transform_edt(~net, return_indices=True)
-    near = idx[ir, ic]                                 # node of nearest channel
+    nearest = idx[ir, ic]
+    par = flood_tree(z, roots)
+    stop = net.ravel()
+    hit = _jump_until(par, stop)
+    near = np.where(stop[hit], idx.ravel()[hit], nearest.ravel()).reshape(H, W)
     local = np.bincount(near.ravel(), minlength=len(rr)).astype(float)
     depth = depth_of(parent)
     area = catchment_sum(parent, depth, local) * KM2   # km2, per node
@@ -151,9 +162,24 @@ def measure(u, net, roots):
 
     # ---- 1. bumps ------------------------------------------------------
     from skimage.morphology import h_maxima
-    for h in (0.025, 0.05):
+    out["bumps"] = {}
+    for h in BUMP_H:
         lab, n = ndi.label(h_maxima(z, h), structure=np.ones((3, 3)))
-        out[f"bumps{h*100:g}"] = n / area_km2
+        out["bumps"][h] = n / area_km2
+    # ISOLATED knobs: summits whose prominence is at least half their height
+    # above the river they drain to -- a knob standing on its own rather
+    # than a summit on a crest.  Prominence is bracketed by a ladder of h.
+    ladder = BUMP_H[0] * 2.0 ** np.arange(8)
+    lab0, n0 = ndi.label(h_maxima(z, ladder[0]), structure=np.ones((3, 3)))
+    prom = np.full(n0 + 1, ladder[0])
+    for h in ladder[1:]:
+        ids = np.unique(lab0[h_maxima(z, h).astype(bool)])
+        prom[ids[ids > 0]] = h
+    pk = ndi.maximum_position(z, lab0, np.arange(1, n0 + 1))
+    hand_pk = np.array([z[p] - zc[near[p]] for p in pk]) if n0 else np.zeros(0)
+    pr = prom[1:]
+    iso = (pr >= BUMP_H[1]) & (pr >= 0.5 * np.maximum(hand_pk, 1e-9))
+    out["isolated"] = float(iso.sum() / area_km2)
 
     # ---- 2a. relief vs window -------------------------------------------
     Ls, R = [], []
@@ -200,7 +226,7 @@ def measure(u, net, roots):
     # ---- 3. valley floor width vs area --------------------------------------
     gy, gx = np.gradient(z)
     slope = np.hypot(gy, gx)
-    flat = (slope < 0.2 * np.median(slope)) & (z - zc[near] < 0.01)
+    flat = (slope < 0.2 * np.median(slope)) & (z - zc[near] < FLOOR_H)
     lab, _n = ndi.label(flat | net, structure=np.ones((3, 3)))
     keep = np.unique(lab[net])
     floor = np.isin(lab, keep[keep > 0])
@@ -229,7 +255,7 @@ def measure(u, net, roots):
     dens = ndi.uniform_filter(net.astype(float), 9)
     off = ~net
     out["rough"] = dict(zip(AREA_EDGES[:-1].tolist(),
-                            np.round(_bins(A_cell[off], rough[off], AREA_EDGES, np.mean) * 1e3, 3).tolist()))
+                            np.round(_bins(A_cell[off], rough[off], AREA_EDGES, np.mean) * (1.0 if meters else 1e3), 3).tolist()))
     out["chan_dens"] = dict(zip(AREA_EDGES[:-1].tolist(),
                                 np.round(_bins(A_cell[off], dens[off], AREA_EDGES, np.mean), 3).tolist()))
     out["trunk_km2"] = float(area.max())
@@ -238,8 +264,12 @@ def measure(u, net, roots):
 
 def report(m):
     H, W = m["shape"]
-    lines = [f"{H} x {W} px = {m['area_km2']:.1f} km2, largest river {m['trunk_km2']:.1f} km2"]
-    lines.append(f"1 bumps / km2         prom>2.5%: {m['bumps2.5']:.2f}   prom>5%: {m['bumps5']:.2f}")
+    unit = "m" if m["meters"] else "of relief"
+    lines = [f"{H} x {W} px = {m['area_km2']:.1f} km2, largest river {m['trunk_km2']:.1f} km2, "
+             f"relief {m['relief']:.3g}" + (" m" if m["meters"] else "")]
+    lines.append("1 bumps / km2         " + "   ".join(
+        f"prom>{h:g}{'m' if m['meters'] else ''}: {v:.2f}" for h, v in m["bumps"].items())
+        + f"   isolated: {m['isolated']:.2f}")
     lines.append("2a relief R(L)        " + "  ".join(f"{k}:{v:.3f}" for k, v in m["R_L"].items())
                  + f"   slope small {m['R_slope_small']:.2f} large {m['R_slope_large']:.2f}")
     lines.append("2b divide height      " + "  ".join(f"{k:g}:{v:.3f}" for k, v in m["divide_h"].items())
@@ -252,7 +282,7 @@ def report(m):
     lines.append(row("3 floor width px", m["floor_w"]) + f"   exp {m['floor_exp']:.2f}")
     for n, d in m["sinuosity"].items():
         lines.append(row(f"4 sinuosity n={n}", d))
-    lines.append(row("5 roughness x1e3", m["rough"]))
+    lines.append(row("5 roughness " + ("m" if m["meters"] else "x1e3"), m["rough"]))
     lines.append(row("5 channel density", m["chan_dens"], "{:.3f}"))
     return "\n".join(lines)
 

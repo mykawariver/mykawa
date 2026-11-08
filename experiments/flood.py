@@ -228,7 +228,7 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               p50=None, smin=4.0, beta=0.5, fine=1.5, fine_s=1.5, rim=4.0,
               rim_l=1.5, edge_a=0.9, edge_l=8.0, funnel=10.0, funnel_l=12.0,
               stem=10, stem_cut=3, floor_rounds=2, rim_open=4.0,
-              funnel_w=4.0, cut_ell=8.0):
+              funnel_w=4.0, cut_ell=8.0, regional=0.0):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -251,6 +251,17 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     ix = np.arange(W)[None, :]
 
     h = noise(rng, H, W, smin, beta)
+    if regional:
+        # A REGIONAL SLOPE TOWARDS THE OUTLETS.  The noise has no direction at
+        # any scale, so a big river wanders as much as a small one.  Real
+        # land falls towards its outlet at the scale of the whole basin; a
+        # rise of `regional` (in units of the noise's std) per 100 px of
+        # distance from the nearest outlet is felt by the long rivers and
+        # drowned by the noise at the scale of a hillslope.  0 = off.
+        seed = np.ones((H, W), bool)
+        for (r, c, *_rest) in roots:
+            seed[int(r), int(c)] = False
+        h = h + float(regional) * ndi.distance_transform_edt(seed) / 100.0
     if fine:
         g = ndi.gaussian_filter(rng.standard_normal((H, W)), fine_s)
         h += fine * g / g.std()
