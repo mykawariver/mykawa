@@ -40,7 +40,7 @@ KM2 = (PX_M / 1000.0) ** 2
 KS = 0.035          # channel slope at A = 1 km2
 THETA = 0.45        # Flint exponent
 S_MAX = 0.35        # headwater slope cap
-W1 = 60.0           # floor width [m] at A = 1 km2 (opens from A0 = 0.1 km2)
+W1 = 30.0           # floor width [m] at A = 1 km2 (opens from A0 = 0.1 km2)
 F_POISSON = 0.6     # hillslope source [m / px2]
 Z0 = 60.0           # stage 3 height scale [m]: finish_micro's u = 1
 
@@ -154,6 +154,8 @@ def cap_channels(rr, cc, parent, zc, area, H, W, s_cap, ratio=3.0):
         every size it sank whole basins by 200 m.)
       z(i) <= z(j) for every j upstream of i -- a capped head pulls its
         stream down with it; a reach below it goes flat, never uphill.
+      z(i) <= z(the cell i drains to) + i's own Flint step -- a lowered
+        river takes its tributaries down with it.
     Every bound is "z(i) <= z(j) + a cost >= 0", so the answer is one
     shortest-path problem: a source joined to each channel cell at its
     Flint z, an edge of cost 0 from a cell to the cell it drains to, and
@@ -177,6 +179,12 @@ def cap_channels(rr, cc, parent, zc, area, H, W, s_cap, ratio=3.0):
     k = parent >= 0
     rows.append(np.flatnonzero(k)); cols.append(parent[k])
     wts.append(np.full(int(k.sum()), 1e-10))
+    # ... and no cell rises above the cell it drains to by more than its
+    # own Flint step.  Without this a lowered river left its smallest twigs
+    # behind -- a one-cell gully whose size class has no neighbour near
+    # enough to bind it stood 100 m above the stream it joins.
+    rows.append(parent[k]); cols.append(np.flatnonzero(k))
+    wts.append(np.maximum(zc[k] - zc[parent[k]], 0.0) + 1e-10)
     cell = rr * W + cc
     for li, kk in enumerate(ks):
         base = n + li * G
@@ -210,7 +218,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
             plate_ridge="cap", plate_base="zero", plate_rise=3.0,
             ridge_lower=30.0, ridge_border=False, ridge_slope=0.05,
-            chan_cap=0.0, floor_keep=True):
+            chan_cap=0.0, floor_keep=True, ridge_level=0, ridge_dome=0.0):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -383,7 +391,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
                            cap=ridge_cap, w0=ridge_w0, h0=ridge_h0,
                            plate=plate, plate_ridge=plate_ridge,
                            lower=ridge_lower, border=ridge_border,
-                           r_slope=ridge_slope)
+                           r_slope=ridge_slope, level_n=ridge_level,
+                           dome=ridge_dome)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
                                poisson_f=0.0)
         ridge_info = dict(R=R, h=h)
@@ -420,7 +429,9 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     ridge_h0=40.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
                     plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
-                    ridge_slope=0.05, chan_cap=1.0, floor_keep=True):
+                    ridge_slope=0.05, chan_cap=1.0, floor_keep=True,
+                    ridge_level=30, ridge_dome=10.0, ridge_room=4.0,
+                    ridge_w=15.0):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -434,9 +445,14 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
     else:
         roots = [(int(r), int(c), float(a)) for (r, c, a) in outlets]
     if stage1 == "flood":
+        # no channel heads along the divides between the rivers of 1 km2 and
+        # more (gen_flood's two passes): the valleys do not eat into a main
+        # ridge, so it stays broad and runs straight
+        fk = dict(ridge_room=ridge_room, ridge_w=ridge_w)
+        fk.update(flood_kw or {})
         net, labels = gen_flood(rng, roots=roots, shape=(H, W), ell=ell,
                                 floor_px=floor_px, labels=True,
-                                regional=regional, **(flood_kw or {}))
+                                regional=regional, **fk)
     else:
         from experiments.mini import gen_headward
         from experiments.baseline import hydraulic_reach
@@ -463,7 +479,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       plate_ridge=plate_ridge, plate_base=plate_base,
                       plate_rise=plate_rise, ridge_lower=ridge_lower,
                       ridge_border=ridge_border, ridge_slope=ridge_slope,
-                      chan_cap=chan_cap, floor_keep=floor_keep)
+                      chan_cap=chan_cap, floor_keep=floor_keep,
+                      ridge_level=ridge_level, ridge_dome=ridge_dome)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
@@ -559,7 +576,7 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
 def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
                 smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0, plate=None,
                 plate_ridge="cap", lower=30.0, border=False, r_slope=0.05,
-                main_A=3.0):
+                main_A=3.0, level_n=0, dome=0.0, min_piece=15):
     """The ridge network as the DUAL of the river network, with heights that
     grow with the size of the rivers a ridge separates.
 
@@ -672,6 +689,32 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
     if cap:
         env = envelope(pin, np.where(pin, zn, 0.0), cap)
         h = np.minimum(h, env)
+        if level_n:
+            # A CREST RUNS LEVEL.  The cap alone leaves a summit between
+            # every two valley heads and a notch above each of them, so the
+            # crest line goes up and down at the spacing of the gullies.  A
+            # real crest is worn down to a line that falls slowly along the
+            # ridge: here it is the capped height averaged along the ridge,
+            # and never above the cap.
+            for _ in range(2):
+                h = np.minimum(h, np.nan_to_num(
+                    smooth_on_ridge(np.where(R, h, np.nan), R, n=level_n)))
+    if dome:
+        # NO SMALL SUMMIT ON A CREST.  Every summit of the crest line is cut
+        # down by up to `dome` m, as far as the ground it stands on (the
+        # h-maxima transform along the ridge cells): a rise of less than
+        # that is gone, a real peak keeps its place with a level top.  A
+        # scrap of ridge of a few cells -- a bump on its own between two
+        # gullies -- is dropped; the slopes either side meet in a saddle.
+        from skimage.morphology import reconstruction
+        rl, rn = ndi.label(R, np.ones((3, 3)))
+        if rn:
+            sz = ndi.sum(R, rl, np.arange(rn + 1))
+            R = R & (sz[rl] >= min_piece)
+        lo = float(h[R].min()) - 2.0 * dome if R.any() else 0.0
+        hm = np.where(R, h, lo)
+        h = np.where(R, reconstruction(np.where(R, h - dome, lo), hm,
+                                       footprint=np.ones((3, 3))), 0.0)
     if w0:
         # BIG RIDGES ARE BROAD.  A ridge of order A gets a rounded crest of
         # half-width w0 * A**p px: pinned as a parabola falling from the
