@@ -37,7 +37,7 @@ PX_M = 1500.0 / 128.0
 KM2 = (PX_M / 1000.0) ** 2
 
 # defaults, chosen by tools/terrain_metrics (see HANDOFF)
-KS = 0.035          # channel slope at A = 1 km2
+KS = 0.02           # channel slope at A = 1 km2
 THETA = 0.45        # Flint exponent
 S_MAX = 0.35        # headwater slope cap
 W1 = 30.0           # floor width [m] at A = 1 km2 (opens from A0 = 0.1 km2)
@@ -424,9 +424,9 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     z0=Z0, finish_kw=None, hill="ridges", sc=0.3, sc_var=0.3,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
-                    lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.6,
+                    lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
                     ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
-                    ridge_h0=40.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
+                    ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
                     plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
                     ridge_slope=0.05, chan_cap=1.0, floor_keep=True,
@@ -576,7 +576,7 @@ def smooth_network(net, roots, c=2.0, s0=1.0, domain=None):
 def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
                 smooth_n=8, w0=1.5, p=0.35, edge=0.25, h0=0.0, plate=None,
                 plate_ridge="cap", lower=30.0, border=False, r_slope=0.05,
-                main_A=3.0, level_n=0, dome=0.0, min_piece=15):
+                main_A=3.0, level_n=0, dome=0.0, min_piece=0, level_A=0.3):
     """The ridge network as the DUAL of the river network, with heights that
     grow with the size of the rivers a ridge separates.
 
@@ -696,24 +696,31 @@ def ridge_lines(net, roots, pin, zn, levels=None, C=28.0, q=0.5, cap=0.45,
             # real crest is worn down to a line that falls slowly along the
             # ridge: here it is the capped height averaged along the ridge,
             # and never above the cap.
+            # Only the main ridges (order >= level_A km2): the small spurs
+            # keep their ups and downs, which is the fine grain of the hills.
+            h_raw = h
             for _ in range(2):
                 h = np.minimum(h, np.nan_to_num(
                     smooth_on_ridge(np.where(R, h, np.nan), R, n=level_n)))
+            main_r = A_o >= level_A
+            h = np.where(main_r, h, h_raw)
     if dome:
         # NO SMALL SUMMIT ON A CREST.  Every summit of the crest line is cut
         # down by up to `dome` m, as far as the ground it stands on (the
         # h-maxima transform along the ridge cells): a rise of less than
-        # that is gone, a real peak keeps its place with a level top.  A
-        # scrap of ridge of a few cells -- a bump on its own between two
-        # gullies -- is dropped; the slopes either side meet in a saddle.
+        # that is gone, a real peak keeps its place with a level top.  Main
+        # ridges only, like the levelling.  min_piece > 0 also drops the
+        # scraps of ridge of fewer cells (a bump on its own between two
+        # gullies); off by default, they are part of the fine grain.
         from skimage.morphology import reconstruction
         rl, rn = ndi.label(R, np.ones((3, 3)))
-        if rn:
+        if rn and min_piece:
             sz = ndi.sum(R, rl, np.arange(rn + 1))
             R = R & (sz[rl] >= min_piece)
         lo = float(h[R].min()) - 2.0 * dome if R.any() else 0.0
         hm = np.where(R, h, lo)
-        h = np.where(R, reconstruction(np.where(R, h - dome, lo), hm,
+        cut = np.where(R & (A_o >= level_A), dome, 0.0)   # main ridges only
+        h = np.where(R, reconstruction(np.where(R, h - cut, lo), hm,
                                        footprint=np.ones((3, 3))), 0.0)
     if w0:
         # BIG RIDGES ARE BROAD.  A ridge of order A gets a rounded crest of
