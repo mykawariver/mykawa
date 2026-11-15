@@ -44,7 +44,66 @@ def _blur(a, sigma, dom):
     return np.where(dom, num / np.maximum(den, 1e-12), np.nan)
 
 
-def _refresh_distance(d, painted):
+class _TopBlocks:
+    """The largest values of a 2-D array that changes a little at a time.
+
+    The map is cut into blocks of B x B cells and the 8 largest cells of
+    every block are kept (ties broken by position, the later cell ranking
+    higher -- the order of np.argsort(kind="stable")).  The 8 largest of the
+    whole map are among them, so top() and max() read a few thousand
+    numbers instead of the map, and update() re-reads only the blocks that
+    the changed boxes touch.  finish_micro asks after every twelfth cut, and
+    the number of cuts grows with the map: read whole, that is time growing
+    as the SQUARE of the map's area."""
+
+    def __init__(self, a, B=32, k=8):
+        self.a, self.B, self.k = a, B, k
+        H, W = a.shape
+        self.nr, self.nc = -(-H // B), -(-W // B)
+        self.vals = np.full((self.nr * self.nc, k), -np.inf)
+        self.idxs = np.zeros((self.nr * self.nc, k), np.int64)
+        self._ar = np.arange(B)
+        bi, bj = np.divmod(np.arange(self.nr * self.nc), self.nc)
+        self._read(bi, bj)
+
+    def _read(self, bi, bj):
+        a, B, k = self.a, self.B, self.k
+        H, W = a.shape
+        rows = (bi * B)[:, None, None] + self._ar[None, :, None]
+        cols = (bj * B)[:, None, None] + self._ar[None, None, :]
+        off = (rows >= H) | (cols >= W)
+        v = np.where(off, -np.inf, a[np.minimum(rows, H - 1),
+                                     np.minimum(cols, W - 1)])
+        v = v.reshape(len(bi), B * B)
+        ix = (rows * W + cols).reshape(len(bi), B * B)
+        o = np.argsort(v, axis=1, kind="stable")[:, -k:]
+        b = bi * self.nc + bj
+        self.vals[b] = np.take_along_axis(v, o, 1)
+        self.idxs[b] = np.take_along_axis(ix, o, 1)
+
+    def update(self, boxes):
+        """boxes: (r0, r1, c0, c1) half-open, where the array has changed."""
+        B = self.B
+        hit = np.zeros((self.nr, self.nc), bool)
+        for r0, r1, c0, c1 in boxes:
+            if r1 > r0 and c1 > c0:
+                hit[r0 // B:(r1 - 1) // B + 1, c0 // B:(c1 - 1) // B + 1] = True
+        bi, bj = np.nonzero(hit)
+        if len(bi):
+            self._read(bi, bj)
+
+    def max(self):
+        return float(self.vals.max())
+
+    def top(self):
+        """Flat indices of the k largest cells, ascending -- what
+        _top_stable(a.ravel(), k) returns."""
+        v, ix = self.vals.ravel(), self.idxs.ravel()
+        o = np.lexsort((ix, v))[-self.k:]
+        return ix[o]
+
+
+def _refresh_distance(d, painted, dmax=None, inplace=False, boxes=None):
     """d = the distance to a set of cells; painted = a list of (rows, cols)
     arrays of cells added to the set since.  Returns the distance to the grown
     set.
@@ -60,7 +119,10 @@ def _refresh_distance(d, painted):
     if not groups:
         return d
     H, W = d.shape
-    R = int(np.ceil(d.max())) + 1
+    # dmax: d.max() if the caller already has it; inplace: write into d
+    # itself; boxes: a list that receives the boxes written to.  All three
+    # only save reading or copying the whole map on every refresh.
+    R = int(np.ceil(d.max() if dmax is None else dmax)) + 1
 
     def box(rows, cols):
         return (max(0, int(rows.min()) - R), min(H, int(rows.max()) + R + 1),
@@ -75,12 +137,15 @@ def _refresh_distance(d, painted):
         jobs = list(zip(parts, groups))
     else:
         jobs = [(whole, (rows, cols))]
-    d = d.copy()
+    if not inplace:
+        d = d.copy()
     for (r0, r1, c0, c1), (rr, cc) in jobs:
         seed = np.ones((r1 - r0, c1 - c0), bool)
         seed[rr - r0, cc - c0] = False
         np.minimum(d[r0:r1, c0:c1], ndi.distance_transform_edt(seed),
                    out=d[r0:r1, c0:c1])
+        if boxes is not None:
+            boxes.append((r0, r1, c0, c1))
     return d
 
 
@@ -144,25 +209,30 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
     d = ndi.distance_transform_edt(~aux)
     painted = []                       # centrelines painted since a refresh
     q70 = np.quantile(u, 0.70)         # u is not changed by the loop
+    # pick="stable" keeps the largest distances by blocks (_TopBlocks), so a
+    # refresh reads and writes only around the new cuts; "argsort" (the
+    # frozen baseline) sorts the whole map as it always did.
+    tb = _TopBlocks(d) if (pick == "stable" and d.size > 8) else None
     for it in range(max_cuts):
         if it % refresh == 0:
-            d = _refresh_distance(d, painted)
-            painted = []
-            if d.max() <= spacing:
-                break
-            # the most undissected cells; one is drawn below with a little
-            # jitter among the top few
-            if pick == "argsort":
-                flat = np.argsort(d.ravel())[-8:]
+            if tb is not None:
+                boxes = []
+                _refresh_distance(d, painted, dmax=tb.max(), inplace=True,
+                                  boxes=boxes)
+                tb.update(boxes)
+                painted = []
+                if tb.max() <= spacing:
+                    break
+                flat = tb.top()
             else:
-                # the 8 are among the cells still farther than `spacing`
-                # whenever there are 8 of those (they outrank every other
-                # cell, and keep their order by position), and late in the
-                # run those are a small part of the map
-                dr = d.ravel()
-                cand = np.flatnonzero(dr > spacing)
-                flat = (cand[_top_stable(dr[cand], 8)] if len(cand) >= 8
-                        else _top_stable(dr, 8))
+                d = _refresh_distance(d, painted)
+                painted = []
+                if d.max() <= spacing:
+                    break
+                # the most undissected cells; one is drawn below with a
+                # little jitter among the top few
+                flat = (np.argsort(d.ravel())[-8:] if pick == "argsort"
+                        else _top_stable(d.ravel(), 8))
         r, c = np.unravel_index(int(rng.choice(flat)), d.shape)
         if d[r, c] <= spacing:
             continue
