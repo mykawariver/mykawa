@@ -152,8 +152,17 @@ def finish_micro(u, net, rng, spacing=3.0, depth0=0.13, width=2.4,
                 break
             # the most undissected cells; one is drawn below with a little
             # jitter among the top few
-            flat = (np.argsort(d.ravel())[-8:] if pick == "argsort"
-                    else _top_stable(d.ravel(), 8))
+            if pick == "argsort":
+                flat = np.argsort(d.ravel())[-8:]
+            else:
+                # the 8 are among the cells still farther than `spacing`
+                # whenever there are 8 of those (they outrank every other
+                # cell, and keep their order by position), and late in the
+                # run those are a small part of the map
+                dr = d.ravel()
+                cand = np.flatnonzero(dr > spacing)
+                flat = (cand[_top_stable(dr[cand], 8)] if len(cand) >= 8
+                        else _top_stable(dr, 8))
         r, c = np.unravel_index(int(rng.choice(flat)), d.shape)
         if d[r, c] <= spacing:
             continue

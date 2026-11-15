@@ -186,26 +186,42 @@ def cap_channels(rr, cc, parent, zc, area, H, W, s_cap, ratio=3.0):
     rows.append(parent[k]); cols.append(np.flatnonzero(k))
     wts.append(np.maximum(zc[k] - zc[parent[k]], 0.0) + 1e-10)
     cell = rr * W + cc
+    src = n + len(ks) * G
+    N = src + 1
+    # The grid layers are the same graph with one slope each, and they are
+    # nearly all of the matrix (27 million edges on a 3 x 12 km map), so
+    # they are written straight into CSR arrays -- one layer's rows copied
+    # with an offset -- instead of going through a sort of the whole edge
+    # list.  The few edges that touch the channel cells are added to it.
+    g1 = sparse.coo_matrix((ln, (A, B)), shape=(G, G))
+    g1 = (g1 + g1.T).tocsr()
+    g1.sort_indices()
+    nz = g1.nnz
+    L = len(ks)
+    indices = np.empty(L * nz, np.int64)
+    data = np.empty(L * nz)
+    indptr = np.zeros(N + 1, np.int64)
     for li, kk in enumerate(ks):
         base = n + li * G
         sk = float(s_cap) * float(slope_of(ratio ** (kk + 0.5)))
-        # the grid layer, both ways
-        rows += [base + A, base + B]; cols += [base + B, base + A]
-        wts += [sk * ln, sk * ln]
+        indices[li * nz:(li + 1) * nz] = g1.indices
+        indices[li * nz:(li + 1) * nz] += base
+        np.multiply(g1.data, sk, out=data[li * nz:(li + 1) * nz])
+        indptr[base + 1:base + G + 1] = g1.indptr[1:] + li * nz
         feed = np.flatnonzero(np.abs(la - kk) <= 1)
         rows.append(feed); cols.append(base + cell[feed])
         wts.append(np.full(len(feed), 1e-10))
         own = np.flatnonzero(la == kk)
         rows.append(base + cell[own]); cols.append(own)
         wts.append(np.full(len(own), 1e-10))
-    src = n + len(ks) * G
+    indptr[src + 1:] = L * nz
+    layers = sparse.csr_matrix((data, indices, indptr), shape=(N, N))
     off = 1.0 - float(zc.min())
     rows.append(np.full(n, src)); cols.append(np.arange(n))
     wts.append(zc + off)
-    N = src + 1
-    M = sparse.coo_matrix((np.concatenate(wts),
-                           (np.concatenate(rows), np.concatenate(cols))),
-                          shape=(N, N)).tocsr()
+    M = layers + sparse.coo_matrix(
+        (np.concatenate(wts), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(N, N)).tocsr()
     d = csgraph.dijkstra(M, directed=True, indices=src)
     return np.minimum(d[:n] - off, zc)
 
@@ -384,7 +400,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         from experiments.ridges import ridge_bone
         R, h = ridge_bone(net, pin, np.where(pin, zn, 0.0))
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
-                               poisson_f=0.0)
+                               poisson_f=0.0, fast=True)
         ridge_info = dict(R=R, h=h)
     elif hill == "ridges":
         R, h = ridge_lines(net, roots, pin, zn, C=ridge_C, q=ridge_q,
@@ -394,12 +410,12 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
                            r_slope=ridge_slope, level_n=ridge_level,
                            dome=ridge_dome)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), R, h,
-                               poisson_f=0.0)
+                               poisson_f=0.0, fast=True)
         ridge_info = dict(R=R, h=h)
     elif hill == "poisson":
         z0 = np.zeros_like(pin)
         u = EL.solve_two_bones(pin, np.where(pin, zn, 0.0), z0, np.zeros((H, W)),
-                               poisson_f=f, domain=dom)
+                               poisson_f=f, domain=dom, fast=True)
     else:
         scf = float(sc)
         if sc_var and rng is not None:

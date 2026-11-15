@@ -78,7 +78,7 @@ def _grid_laplacian(shape, domain=None):
 
 def solve_two_bones(valley, zn, ridge_mask, ridge_z, poisson_f=0.0,
                     pin_cap_px=None, channel_cap_frac=1.0, cap_env=None,
-                    domain=None):
+                    domain=None, fast=False):
     """2骨（谷 zn・尾根 z）を Dirichlet に ∇²u = -f を解く。
 
     poisson_f=0 で
@@ -108,6 +108,54 @@ def solve_two_bones(valley, zn, ridge_mask, ridge_z, poisson_f=0.0,
         dom = np.asarray(domain, bool)
         fixed = fixed | ~dom
         fval = np.where(dom, fval, 0.0)
+    if fast:
+        # THE SAME SYSTEM WITHOUT ITS PINNED CELLS.  A pinned cell is a known
+        # value, so it goes to the right-hand side and only the free cells
+        # are solved for -- a symmetric positive-definite system of about
+        # two thirds the size, ordered for a symmetric matrix.  The answer
+        # is the same to rounding (not bit for bit: off by default).
+        H_, W_ = valley.shape
+        n = H_ * W_
+        idx = np.arange(n).reshape(H_, W_)
+        if domain is None:
+            a = np.concatenate([idx[:, :-1].ravel(), idx[:-1, :].ravel()])
+            b_ = np.concatenate([idx[:, 1:].ravel(), idx[1:, :].ravel()])
+        else:
+            kh = dom[:, :-1] & dom[:, 1:]
+            kv = dom[:-1, :] & dom[1:, :]
+            a = np.concatenate([idx[:, :-1][kh], idx[:-1, :][kv]])
+            b_ = np.concatenate([idx[:, 1:][kh], idx[1:, :][kv]])
+        fx = fixed.ravel()
+        fv = fval.ravel()
+        deg = np.bincount(a, minlength=n) + np.bincount(b_, minlength=n)
+        free = np.flatnonzero(~fx)
+        pos = np.full(n, -1)
+        pos[free] = np.arange(len(free))
+        rhs = (np.broadcast_to(np.asarray(poisson_f, float),
+                               valley.shape).ravel()[free].copy()
+               if np.any(poisson_f) else np.zeros(len(free)))
+        # edges free-pinned feed the right-hand side, free-free the matrix
+        for p_, q_ in ((a, b_), (b_, a)):
+            k = ~fx[p_] & fx[q_]
+            rhs += np.bincount(pos[p_[k]], weights=fv[q_[k]],
+                               minlength=len(free))
+        k = ~fx[a] & ~fx[b_]
+        pa, pb = pos[a[k]], pos[b_[k]]
+        m = len(free)
+        Lff = sp.coo_matrix(
+            (np.concatenate([-np.ones(2 * len(pa)), deg[free].astype(float)]),
+             (np.concatenate([pa, pb, np.arange(m)]),
+              np.concatenate([pb, pa, np.arange(m)]))), shape=(m, m)).tocsc()
+        u = fv.copy()
+        iso = deg[free] == 0                  # a free cell with no neighbour
+        if m:
+            if iso.any():
+                Lff = Lff + sp.diags(iso.astype(float)).tocsc()
+            u[free] = spsolve(Lff, rhs, permc_spec="MMD_AT_PLUS_A")
+        u = u.reshape(valley.shape)
+        if cap_env is not None:
+            u = np.where(fixed, u, np.minimum(u, cap_env))
+        return np.where(dom, u, np.nan) if domain is not None else u
     L = _grid_laplacian(valley.shape, domain)
     if np.any(poisson_f):
         b = np.broadcast_to(np.asarray(poisson_f, float),

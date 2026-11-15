@@ -190,10 +190,21 @@ def depth_of(parent):
         anc[live] = anc[a]
 
 
+_LEVELS = [None, None]
+
+
 def _levels(depth):
+    """The cells grouped by depth, deepest first.  gen_flood asks for the
+    same tree's levels some twenty times over (once per trial threshold), so
+    the last answer is kept and returned when the depths are the same."""
+    key = (depth.shape, depth.dtype.str, hash(depth.tobytes()))
+    if _LEVELS[0] == key:
+        return _LEVELS[1]
     order = np.argsort(-depth, kind="stable")
     cuts = np.flatnonzero(np.diff(depth[order])) + 1
-    return np.split(order, cuts)
+    out = np.split(order, cuts)
+    _LEVELS[0], _LEVELS[1] = key, out
+    return out
 
 
 def catchment_sum(parent, depth, w=None):
