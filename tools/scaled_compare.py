@@ -64,6 +64,12 @@ def run(which, size, seed):
     return u, net, measure(u, net, m["roots"], meters=True), dt
 
 
+def run_summary(job):
+    """(which, size, seed) -> (summary, seconds); one job of main()'s pool."""
+    _u, _n, m, dt = run(*job)
+    return summary(m), dt
+
+
 def summary(m):
     def mean_over(d, keys):
         v = [d[k] for k in keys if k in d and np.isfinite(d[k])]
@@ -119,12 +125,18 @@ def main(argv=None):
     a = ap.parse_args(argv)
     keys = ["isolated", "hier", "hand", "orth", "gap99", "W1", "W10", "sin_s", "sin_L", "rough", "dens"]
     print(f"{'':16}" + "".join(f"{k:>9}" for k in keys) + f"{'t':>7}")
+    # every map in its own process, as many at a time as there are CPUs
+    import concurrent.futures as cf
+    import multiprocessing as mp
+    jobs = [(which, size, sd) for size in ("128", "long")
+            for which in ("old", "new") for sd in a.seeds]
+    with cf.ProcessPoolExecutor(min(len(jobs), os.cpu_count() or 1),
+                                mp_context=mp.get_context("spawn")) as ex:
+        res = dict(zip(jobs, ex.map(run_summary, jobs)))
     for size in ("128", "long"):
         for which in ("old", "new"):
-            rows, ts = [], []
-            for sd in a.seeds:
-                _u, _n, m, dt = run(which, size, sd)
-                rows.append(summary(m)); ts.append(dt)
+            rows = [res[(which, size, sd)][0] for sd in a.seeds]
+            ts = [res[(which, size, sd)][1] for sd in a.seeds]
             name = f"{which} {'128' if size == '128' else '3x12km'}"
             print(f"{name:16}" + "".join(
                 f"{np.nanmean([r[k] for r in rows]):9.2f}" for k in keys)

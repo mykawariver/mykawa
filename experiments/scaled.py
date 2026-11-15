@@ -292,7 +292,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
                       0.2, 0.7)
         if lith_var:
             from experiments.flood import noise
-            nz = noise(rng, H, W, smin=32.0, beta=0.5)
+            nz = noise(rng, H, W, smin=32.0, beta=0.5, fast=True)
             nz = (nz - nz.mean()) / (nz.std() or 1.0)
             ksn = ksn * np.exp(lith_var * nz[rr, cc])
         # the outlet's own stream keeps the plain law, so the trunk and the
@@ -404,7 +404,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         scf = float(sc)
         if sc_var and rng is not None:
             from experiments.flood import noise
-            nz = noise(rng, H, W, smin=8.0, beta=0.5)
+            nz = noise(rng, H, W, smin=8.0, beta=0.5, fast=True)
             nz = (nz - nz.mean()) / (nz.std() or 1.0)   # noise() keeps a mean
             scf = sc * np.exp(sc_var * nz)
         u = envelope(pin, np.where(pin, zn, 0.0), scf, dom)
@@ -416,6 +416,34 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             u = u * (1 - wgt) + ub * wgt
             u = np.maximum(u, np.where(pin, zn, -np.inf))
     return u, dict(area=amap, floor=floor, zc=zmap, pin=pin, zn=zn, **ridge_info)
+
+
+_STAGE1 = {}        # generate_scaled's last few networks, by their arguments
+
+
+def _one(args):
+    seed, kw = args
+    return generate_scaled(seed, **kw)
+
+
+def generate_many(seeds, workers=None, **kw):
+    """[generate_scaled(seed, **kw) for seed in seeds], one process per seed
+    (as many at a time as there are CPUs, or `workers`).  The same results;
+    a sweep over four seeds takes about as long as one map."""
+    import concurrent.futures as cf
+    import multiprocessing as mp
+    seeds = list(seeds)
+    n = min(len(seeds), workers or os.cpu_count() or 1)
+    # the workers import the main script again, so it must be a file that
+    # guards its work with `if __name__ == "__main__":` -- from an
+    # interactive prompt or a script on stdin the seeds run one by one
+    main = getattr(sys.modules.get("__main__"), "__file__", None)
+    if n <= 1 or not (main and os.path.exists(main)):
+        return [generate_scaled(sd, **kw) for sd in seeds]
+    # "spawn": a forked child inherits the locks of this process's thread
+    # pools (cone_floor, the BLAS) and can hang on them
+    with cf.ProcessPoolExecutor(n, mp_context=mp.get_context("spawn")) as ex:
+        return list(ex.map(_one, [(sd, kw) for sd in seeds]))
 
 
 def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
@@ -431,7 +459,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
                     ridge_slope=0.05, chan_cap=1.0, floor_keep=True,
                     ridge_level=30, ridge_dome=10.0, ridge_room=4.0,
-                    ridge_w=15.0):
+                    ridge_w=15.0, cache=True):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -444,31 +472,48 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
         roots = edge_roots(rng, H, W, k)
     else:
         roots = [(int(r), int(c), float(a)) for (r, c, a) in outlets]
-    if stage1 == "flood":
-        # no channel heads along the divides between the rivers of 1 km2 and
-        # more (gen_flood's two passes): the valleys do not eat into a main
-        # ridge, so it stays broad and runs straight
-        fk = dict(ridge_room=ridge_room, ridge_w=ridge_w)
-        fk.update(flood_kw or {})
-        net, labels = gen_flood(rng, roots=roots, shape=(H, W), ell=ell,
-                                floor_px=floor_px, labels=True,
-                                regional=regional, **fk)
+    # STAGE 1 IS KEPT.  The network depends only on the arguments below, so a
+    # call that changes stage 2 or 3 alone (which is what tuning them is)
+    # takes it from the last few made, with the random generator put back
+    # where stage 1 left it -- the result is bit for bit the same.
+    key = repr((seed, (H, W), roots, regional, ell, floor_px, stage1, trend,
+                sorted((flood_kw or {}).items()), regrow,
+                sorted((regrow_kw or {}).items()), straighten, s0,
+                ridge_room, ridge_w))
+    hit = _STAGE1.get(key) if cache else None
+    if hit is not None:
+        net, labels = hit[0].copy(), hit[1].copy()
+        rng.bit_generator.state = hit[2]
     else:
-        from experiments.mini import gen_headward
-        from experiments.baseline import hydraulic_reach
-        reach = None if (H, W) == (N, N) else hydraulic_reach((H, W), roots)
-        net, labels = gen_headward(rng, n=H, ell=ell, roots=roots,
-                                   shape=(H, W), reach=reach,
-                                   floor_px=floor_px, labels=True,
-                                   trend=trend)
-    if regrow:
-        from experiments.mini import basin_labels
-        net = regrow_small(net, roots, rng, **(regrow_kw or {}))
-        labels = basin_labels(net, roots)
-    if straighten:
-        from experiments.mini import basin_labels
-        net = smooth_network(net, roots, c=straighten, s0=s0)
-        labels = basin_labels(net, roots)
+        if stage1 == "flood":
+            # no channel heads along the divides between the rivers of 1 km2 and
+            # more (gen_flood's two passes): the valleys do not eat into a main
+            # ridge, so it stays broad and runs straight
+            fk = dict(ridge_room=ridge_room, ridge_w=ridge_w, fast_noise=True)
+            fk.update(flood_kw or {})
+            net, labels = gen_flood(rng, roots=roots, shape=(H, W), ell=ell,
+                                    floor_px=floor_px, labels=True,
+                                    regional=regional, **fk)
+        else:
+            from experiments.mini import gen_headward
+            from experiments.baseline import hydraulic_reach
+            reach = None if (H, W) == (N, N) else hydraulic_reach((H, W), roots)
+            net, labels = gen_headward(rng, n=H, ell=ell, roots=roots,
+                                       shape=(H, W), reach=reach,
+                                       floor_px=floor_px, labels=True,
+                                       trend=trend)
+        if regrow:
+            from experiments.mini import basin_labels
+            net = regrow_small(net, roots, rng, **(regrow_kw or {}))
+            labels = basin_labels(net, roots)
+        if straighten:
+            from experiments.mini import basin_labels
+            net = smooth_network(net, roots, c=straighten, s0=s0)
+            labels = basin_labels(net, roots)
+        if cache:
+            while len(_STAGE1) >= 8:
+                _STAGE1.pop(next(iter(_STAGE1)))
+            _STAGE1[key] = (net.copy(), labels.copy(), rng.bit_generator.state)
     u, info = solve_m(net, roots, labels, ks, theta, s_max, w1, f, hill=hill,
                       sc=sc, sc_var=sc_var, crest_sigma=crest_sigma, rng=rng,
                       floor_close=floor_close, stream_var=stream_var,
@@ -772,7 +817,7 @@ def regrow_small(net, roots, rng, a_keep=0.2, sc=0.3, amp=12.0, sigma=2.0,
     z = integrate_profile(parent, step, slope_of(area))
     zmap = np.zeros((H, W)); zmap[rr, cc] = z
     d, (iy, ix) = ndi.distance_transform_edt(~skel, return_indices=True)
-    nz = noise(rng, H, W, smin=6.0, beta=0.5)
+    nz = noise(rng, H, W, smin=6.0, beta=0.5, fast=True)
     nz = (nz - nz.mean()) / (nz.std() or 1.0)
     zp = zmap[iy, ix] + sc * d * PX_M + amp * nz
     zp = ndi.gaussian_filter(zp, sigma)

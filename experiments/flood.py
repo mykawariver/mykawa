@@ -61,13 +61,49 @@ FLOOR_REACH = 2.0
 P50_FIT = 0.91
 
 
-def noise(rng, H, W, smin=4.0, beta=0.5):
+def _gauss_tf(n, sigma):
+    """Transfer function (rfft over the period 2n) of scipy's gaussian
+    kernel of this sigma -- truncated at 4 sigma, weights summing to 1 --
+    wrapped onto the even extension of an axis of n cells."""
+    r = int(4.0 * float(sigma) + 0.5)
+    x = np.arange(-r, r + 1)
+    w = np.exp(-0.5 * (x / float(sigma)) ** 2)
+    w /= w.sum()
+    k = np.zeros(2 * n)
+    np.add.at(k, x % (2 * n), w)
+    return np.fft.rfft(k).real          # the wrapped kernel is even
+
+
+def gaussian_fft(a, sigma):
+    """ndi.gaussian_filter(a, sigma) -- same kernel, same mode="reflect" --
+    computed in Fourier space on the even extension of `a`.  The answer is
+    the same to rounding (about 1e-15) and the time does not grow with
+    sigma: a blur of 512 px costs what one of 4 px does, where the direct
+    filter runs a kernel of 4097 taps along every row."""
+    H, W = a.shape
+    e = np.empty((2 * H, 2 * W))
+    e[:H, :W] = a
+    e[:H, W:] = a[:, ::-1]
+    e[H:, :] = e[:H, :][::-1]
+    F = np.fft.rfft2(e)
+    F *= np.fft.fft(np.fft.irfft(_gauss_tf(H, sigma), 2 * H)).real[:, None]
+    F *= _gauss_tf(W, sigma)[None, :]
+    return np.fft.irfft2(F, s=e.shape)[:H, :W]
+
+
+def noise(rng, H, W, smin=4.0, beta=0.5, fast=False):
     """Octaves of gaussian-smoothed white noise from `smin` px up to half the
-    map, each scaled to std s**beta; the sum has unit std."""
+    map, each scaled to std s**beta; the sum has unit std.
+
+    fast: blur in Fourier space (gaussian_fft).  The same field to rounding,
+    not bit for bit, so it is off by default and the frozen figures of
+    baseline / usage_figures stay as they are; experiments/scaled turns it
+    on (most of stage 1's time on a long map was the widest octaves)."""
     h = np.zeros((H, W))
     s = smin
+    blur = gaussian_fft if fast else ndi.gaussian_filter
     while s <= max(H, W) / 2:
-        g = ndi.gaussian_filter(rng.standard_normal((H, W)), s)
+        g = blur(rng.standard_normal((H, W)), s)
         h += (s ** beta) * g / g.std()
         s *= 2
     return h / h.std()
@@ -305,7 +341,7 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
               funnel_w=4.0, cut_ell=8.0, regional=0.0, big_s=32.0,
               calm=0.0, align=0.0, align_beta=None, align_reg=0.0,
               calm_q=(50.0, 95.0), crest_thr=0.0, crest_bg=0.0,
-              ridge_room=0.0, ridge_a=7300.0, ridge_w=10.0):
+              ridge_room=0.0, ridge_a=7300.0, ridge_w=10.0, fast_noise=False):
     """Stage 1 by priority flood.  Same roots / shape / domain / labels
     contract as mini.gen_headward: returns the 1-px network, and with
     labels=True also the int16 basin raster (-1 off the map, 0 land, k > 0
@@ -359,7 +395,7 @@ def gen_flood(rng, n=128, roots=None, shape=None, domain=None, labels=False,
     iy = np.arange(H)[:, None]
     ix = np.arange(W)[None, :]
 
-    h = noise(rng, H, W, smin, beta)
+    h = noise(rng, H, W, smin, beta, fast=fast_noise)
     shaped = bool(calm or align or crest_thr)
     if regional and shaped:
         seed = np.ones((H, W), bool)
