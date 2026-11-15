@@ -210,7 +210,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
             plate_ridge="cap", plate_base="zero", plate_rise=3.0,
             ridge_lower=30.0, ridge_border=False, ridge_slope=0.05,
-            chan_cap=0.0):
+            chan_cap=0.0, floor_keep=True):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -235,6 +235,36 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
                   0.0)
     hw = np.where(hw > 1.0, hw, 0.0)
     floor, (oy, ox) = cone_floor(net, hw)
+    # a strip of ground left between two floors (a tributary running beside
+    # the trunk before it joins) would rise as a knife-edge at the threshold
+    # slope; it is a low terrace in the real thing, so close the floor over
+    # gaps of a few px and fill the small holes it leaves
+    floor0 = floor
+    if floor_close:
+        from skimage.morphology import disk
+        floor = ndi.binary_closing(floor | net, structure=disk(int(floor_close)))
+        # islands of ground inside a floor: keep only the ones broad enough
+        # to be real hills (a meander core), fill the slivers
+        holes = ndi.binary_fill_holes(floor) & ~floor
+        lab, nh = ndi.label(holes)
+        if nh:
+            idt = ndi.distance_transform_edt(holes)
+            thick = ndi.maximum(idt, lab, np.arange(1, nh + 1))
+            size = ndi.sum(holes, lab, np.arange(1, nh + 1))
+            fill = np.concatenate([[False], (thick < 3.5) | (size < 600)])
+            floor = floor | fill[lab]
+    # the ground the closing added belongs to the river of the floor next
+    # to it, so a tributary crossing it is on that river's floor too
+    onfl = floor0
+    if floor_close and floor0.any():
+        _df, (fy, fx) = ndi.distance_transform_edt(~floor0, return_indices=True)
+        oy, ox = oy[fy, fx], ox[fy, fx]
+        # the closing is for floors: two headwater gullies a few px apart
+        # have no floor between them
+        floor = floor0 | net | (floor & (_df <= 2 * int(floor_close) + 2))
+        onfl = floor0 | ndi.binary_dilation(floor & ~net, np.ones((3, 3), bool))
+    elif floor_close:
+        floor = floor0 | net
     # A TRIBUTARY ON A BIGGER RIVER'S FLOOR FLOWS AT THAT RIVER'S GRADIENT.
     # With its own (steeper) Flint slope it would climb above the floor it
     # crosses, and the floor -- painted at the nearest channel's height --
@@ -262,7 +292,7 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
         trunk = sid == sid[np.argmax(area)]
         ksn[trunk], thn[trunk] = ks, theta
     S = slope_of(area, ksn, thn, s_max)
-    own = idx[oy[rr, cc], ox[rr, cc]]
+    own = np.where(onfl[rr, cc], idx[oy[rr, cc], ox[rr, cc]], -1)
     onf = (own >= 0) & (own != np.arange(len(rr)))
     onf[onf] &= area[own[onf]] > 2.0 * area[onf]
     S[onf] = slope_of(area[own[onf]], ksn[own[onf]], thn[own[onf]], s_max)
@@ -304,23 +334,6 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     if chan_cap:
         zc = cap_channels(rr, cc, parent, zc, area, H, W, chan_cap)
     zmap = np.zeros((H, W)); zmap[rr, cc] = zc
-    # a strip of ground left between two floors (a tributary running beside
-    # the trunk before it joins) would rise as a knife-edge at the threshold
-    # slope; it is a low terrace in the real thing, so close the floor over
-    # gaps of a few px and fill the small holes it leaves
-    if floor_close:
-        from skimage.morphology import disk
-        floor = ndi.binary_closing(floor | net, structure=disk(int(floor_close)))
-        # islands of ground inside a floor: keep only the ones broad enough
-        # to be real hills (a meander core), fill the slivers
-        holes = ndi.binary_fill_holes(floor) & ~floor
-        lab, nh = ndi.label(holes)
-        if nh:
-            idt = ndi.distance_transform_edt(holes)
-            thick = ndi.maximum(idt, lab, np.arange(1, nh + 1))
-            size = ndi.sum(holes, lab, np.arange(1, nh + 1))
-            fill = np.concatenate([[False], (thick < 3.5) | (size < 600)])
-            floor = floor | fill[lab]
     if labels is not None:
         floor = clip_to_own_basin(floor, labels)
     pin = band | floor
@@ -330,7 +343,29 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     # narrow divide (a wall along the floor's edge), and the nearest channel
     # along the floor still leaves a step where a perched tributary's floor
     # meets the trunk's; the envelope turns every such step into a ramp.
-    zn = envelope(net, zmap, floor_tilt, mask=pin)
+    # ALONG A RIVER THE FLOOR RISES AS THE RIVER DOES.  Every channel cell
+    # is pinned ground, so with one tilt for every path the envelope also ran
+    # up the channels themselves and no river could climb faster than
+    # floor_tilt: every valley of the map lay at 2 % whatever Flint's law
+    # gave it, and the hills between them had nothing to stand on.  The
+    # tilt next to a channel cell is therefore at least that cell's own
+    # slope (and its tributaries' where they join it), so the envelope
+    # leaves the channel profile as it is and still ramps the floor across
+    # the valley.  floor_keep=False is the old single tilt.
+    tilt = floor_tilt
+    if floor_keep:
+        kk = (parent >= 0) & (step > 0)
+        sl = np.zeros(len(rr))
+        sl[kk] = (zc[kk] - zc[parent[kk]]) / (step[kk] * PX_M)
+        scn = np.maximum(sl, floor_tilt)
+        np.maximum.at(scn, parent[kk], sl[kk])
+        # ... but only beside the channel itself (1 px), and not where that
+        # ground is the floor of a bigger river: there a steep gully coming
+        # off the hills would lift a wedge of the floor around its mouth
+        nn = idx[iyn, ixn]
+        big = floor0 & (area[idx[oy, ox]] > 2.0 * area[nn])
+        tilt = np.where((_dn < 1.5) & ~big, scn[nn], floor_tilt)
+    zn = envelope(net, zmap, tilt, mask=pin)
     bad = ~np.isfinite(zn)
     zn = np.where(bad, zmap[iyn, ixn] + floor_tilt * _dn * PX_M, zn)
     dom = None
@@ -380,12 +415,12 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     z0=Z0, finish_kw=None, hill="ridges", sc=0.3, sc_var=0.3,
                     crest_sigma=1.5, straighten=2.0, s0=1.0, floor_close=2,
                     stage1="flood", trend=None, stream_var=0.4, theta_var=0.1,
-                    lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.25,
+                    lith_var=0.3, ridge_C=40.0, ridge_q=0.3, ridge_cap=0.6,
                     ridge_w0=1.5, flood_kw=None, regrow=True, regrow_kw=None,
-                    ridge_h0=0.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
+                    ridge_h0=40.0, zmode="flint", plate_d1=50.0, plate_b=0.4,
                     plate_tilt=0.005, plate_ridge="cap", plate_base="zero",
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
-                    ridge_slope=0.05, chan_cap=1.0):
+                    ridge_slope=0.05, chan_cap=1.0, floor_keep=True):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -428,7 +463,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       plate_ridge=plate_ridge, plate_base=plate_base,
                       plate_rise=plate_rise, ridge_lower=ridge_lower,
                       ridge_border=ridge_border, ridge_slope=ridge_slope,
-                      chan_cap=chan_cap)
+                      chan_cap=chan_cap, floor_keep=floor_keep)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,
