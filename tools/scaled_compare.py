@@ -19,6 +19,11 @@ edge), the summary numbers of tools/terrain_metrics, averaged over seeds:
     sin_s      sinuosity over 32 steps, rivers < 0.1 km2
     sin_L      sinuosity over 32 steps, rivers >= 3 km2
     rough      roughness next to rivers >= 3 km2 / next to rivers < 0.1 km2
+    slope50    median gradient                      (new generator only, in
+    lr500      median relief in a 500 m window [m]   metres; the same numbers
+    flat       share of the ground flatter than 0.05 for three real basins:
+    fine       std of u - gaussian(u, 3 px) [m]      python -m tools.real_basin)
+    knobs      small closed knobs on the whole map
     dens       channel density, same ratio
     t          seconds to generate
 
@@ -36,6 +41,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.terrain_metrics import measure
 
+SURF = ["slope50", "lr500", "flat", "fine", "knobs"]
 LONG = (256, 1024)
 ROOTS_LONG = [(128, 1023, np.pi)]
 
@@ -66,8 +72,14 @@ def run(which, size, seed):
 
 def run_summary(job):
     """(which, size, seed) -> (summary, seconds); one job of main()'s pool."""
-    _u, _n, m, dt = run(*job)
-    return summary(m), dt
+    u, _n, m, dt = run(*job)
+    out = summary(m)
+    # the surface numbers are in metres: the new generator only
+    from tools.terrain_metrics import surface_stats
+    st = surface_stats(u) if job[0] == "new" else {}
+    for k in SURF:
+        out[k] = st.get(k, np.nan)
+    return out, dt
 
 
 def summary(m):
@@ -123,7 +135,7 @@ def main(argv=None):
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3])
     ap.add_argument("--fig", default=None)
     a = ap.parse_args(argv)
-    keys = ["isolated", "hier", "hand", "orth", "gap99", "W1", "W10", "sin_s", "sin_L", "rough", "dens"]
+    keys = ["isolated", "hier", "hand", "orth", "gap99", "W1", "W10", "sin_s", "sin_L", "rough", "dens"] + SURF
     print(f"{'':16}" + "".join(f"{k:>9}" for k in keys) + f"{'t':>7}")
     # every map in its own process, as many at a time as there are CPUs
     import concurrent.futures as cf

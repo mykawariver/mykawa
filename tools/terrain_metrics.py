@@ -329,6 +329,53 @@ def report(m):
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------
+# numbers of the surface alone (no network): the same for a generated map and
+# a real DEM, in metres.  The targets are three real basins in southern Boso
+# (tools/real_basin.py).
+def knobs(u, h=3.0, max_cells=40):
+    """Small closed knobs: summits standing at least h m above their own
+    saddle whose dome (the ground within h of the summit) covers at most
+    max_cells cells -- the dots on a contour map.  Returns (mask, count).
+    knobs(-u) counts the pits."""
+    from skimage.morphology import reconstruction
+    u = np.asarray(u, float)
+    dome = u - reconstruction(u - h, u, footprint=np.ones((3, 3)))
+    lab, n = ndi.label(dome > 1e-6, np.ones((3, 3)))
+    if not n:
+        return np.zeros(u.shape, bool), 0
+    idx = np.arange(1, n + 1)
+    top = ndi.maximum(dome, lab, idx)
+    size = ndi.sum(dome > 1e-6, lab, idx)
+    ok = np.concatenate([[False], (top >= h - 1e-6) & (size <= max_cells)])
+    return ok[lab], int(ok.sum())
+
+
+def surface_stats(u, mask=None, px_m=PX_M):
+    """u in metres -> dict:
+      slope50, slope90  median and 90th percentile of the gradient
+      lr250, lr500, lr1000  median relief (max - min) in a window of that
+                        many metres across
+      flat              share of the ground with gradient < 0.05
+      fine              std of u - gaussian(u, 3 px): the grain of the hills
+      knobs             small closed knobs (see knobs), whole map
+    mask: the cells to count (a basin); the windows still see the ground
+    around them.  Cells off the map (NaN) should be set to 0 and masked."""
+    u = np.asarray(u, float)
+    m = np.ones(u.shape, bool) if mask is None else np.asarray(mask, bool)
+    gy, gx = np.gradient(u, px_m)
+    g = np.hypot(gy, gx)[m]
+    out = dict(slope50=float(np.median(g)), slope90=float(np.percentile(g, 90)),
+               flat=float((g < 0.05).mean()),
+               fine=float(np.std((u - ndi.gaussian_filter(u, 3.0))[m])),
+               knobs=knobs(u)[1])
+    for L in (250, 500, 1000):
+        w = 2 * int(round(L / px_m / 2)) + 1
+        r = ndi.maximum_filter(u, w) - ndi.minimum_filter(u, w)
+        out[f"lr{L}"] = float(np.median(r[m]))
+    return out
+
+
 def main():
     import time
     from experiments.baseline import generate
