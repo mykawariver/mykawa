@@ -234,7 +234,8 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
             zmode="flint", plate_d1=50.0, plate_b=0.4, plate_tilt=0.005,
             plate_ridge="cap", plate_base="zero", plate_rise=3.0,
             ridge_lower=30.0, ridge_border=False, ridge_slope=0.05,
-            chan_cap=0.0, floor_keep=True, ridge_level=0, ridge_dome=0.0):
+            chan_cap=0.0, floor_keep=True, ridge_level=0, ridge_dome=0.0,
+            v_below=0.0):
     """Stage 2 in metres.  Returns u [m].
 
     hill: "poisson" lifts the ground between the valleys by nabla^2 u = -f;
@@ -250,6 +251,13 @@ def solve_m(net, roots, labels=None, ks=KS, theta=THETA, s_max=S_MAX, w1=W1,
     amap = np.zeros((H, W)); amap[rr, cc] = area
     _dn, (iyn, ixn) = ndi.distance_transform_edt(~net, return_indices=True)
     band = ndi.binary_dilation(net)
+    if v_below:
+        # A SMALL VALLEY IS A V.  The band pins one cell either side of
+        # every channel at the channel's height, so the smallest gully has a
+        # flat bed three cells (35 m) wide and its contours cross it in a
+        # round U.  Channels draining less than v_below km2 are pinned on
+        # their own cell only: the slopes meet at the channel.
+        band = net | ndi.binary_dilation(net & (amap >= v_below))
     if labels is not None:
         band = clip_to_own_basin(band, labels)
     # floor half-width in px from the absolute law; the channel cell itself
@@ -475,7 +483,7 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                     plate_rise=3.0, ridge_lower=30.0, ridge_border=False,
                     ridge_slope=0.05, chan_cap=1.0, floor_keep=True,
                     ridge_level=30, ridge_dome=10.0, ridge_room=4.0,
-                    ridge_w=15.0, cache=True):
+                    ridge_w=15.0, cache=True, v_below=0.0):
     """Stages 1-3, u in metres (the outlets at 0 m)."""
     from experiments.baseline import edge_roots, N
     from experiments.flood import gen_flood
@@ -541,7 +549,8 @@ def generate_scaled(seed, shape=(128, 128), outlets=None, n_roots=None,
                       plate_rise=plate_rise, ridge_lower=ridge_lower,
                       ridge_border=ridge_border, ridge_slope=ridge_slope,
                       chan_cap=chan_cap, floor_keep=floor_keep,
-                      ridge_level=ridge_level, ridge_dome=ridge_dome)
+                      ridge_level=ridge_level, ridge_dome=ridge_dome,
+                      v_below=v_below)
     if finish:
         kw = dict(depth0=0.13, width=2.4, smooth=1.5,
                   max_cuts=int(500 * H * W / (N * N)), final_sigma=0.9,

@@ -376,6 +376,64 @@ def surface_stats(u, mask=None, px_m=PX_M):
     return out
 
 
+# --------------------------------------------------------------------------
+# how FINELY the ground is dissected, whatever the height of the relief
+def valley_lines(u, mask=None, sigma=1.0, kmin=1 / 40.0, smin=0.03):
+    """(valley, spur) line length per km2 [km/km2].  A cell is on a valley
+    line where the CONTOUR through it bends tighter than a radius of 1/kmin
+    m with the concave side uphill, on a spur line where it bends the other
+    way; the cells are thinned to lines.  Contour curvature has no
+    amplitude, so a low hill and a high one with the same pattern of
+    valleys give the same number.  Real (tools/real_basin): nagao 6.9 / 7.8,
+    futama 6.4 / 7.0, soro 3.9 / 4.2 (half of it is a smooth landslide
+    slope)."""
+    from skimage.morphology import skeletonize
+    us = ndi.gaussian_filter(np.asarray(u, float), sigma)
+    gy, gx = np.gradient(us, PX_M)
+    gyy, _gyx = np.gradient(gy, PX_M)
+    gxy, gxx = np.gradient(gx, PX_M)
+    g2 = gx * gx + gy * gy
+    kp = (gxx * gy * gy - 2 * gxy * gx * gy + gyy * gx * gx) \
+        / np.maximum(g2 ** 1.5, 1e-12)
+    steep = np.sqrt(g2) > smin
+    m = steep if mask is None else (np.asarray(mask, bool) & steep)
+    km2 = (u.size if mask is None else np.asarray(mask, bool).sum()) * KM2
+    return (float(skeletonize((kp > kmin) & m).sum() * PX_M / 1000.0 / km2),
+            float(skeletonize((kp < -kmin) & m).sum() * PX_M / 1000.0 / km2))
+
+
+def aspect_length(u, mask=None, smin=0.03, sigma=1.0, rmax=40):
+    """Distance [m] over which the downslope DIRECTION stays the same: the
+    lag at which the autocorrelation of the unit gradient vector falls to
+    0.5 (all directions, cells steeper than smin).  Small = finely
+    dissected.  Real: nagao 41, futama 44, soro 96."""
+    us = ndi.gaussian_filter(np.asarray(u, float), sigma)
+    gy, gx = np.gradient(us, PX_M)
+    g = np.hypot(gx, gy)
+    m = (g > smin) if mask is None else (np.asarray(mask, bool) & (g > smin))
+    nx = np.where(m, gx / np.maximum(g, 1e-12), 0.0)
+    ny = np.where(m, gy / np.maximum(g, 1e-12), 0.0)
+    sh = (2 * u.shape[0], 2 * u.shape[1])
+    pw = lambda a: np.abs(np.fft.rfft2(a, sh)) ** 2
+    ac = np.fft.irfft2(pw(nx) + pw(ny), sh)
+    cnt = np.fft.irfft2(pw(m.astype(float)), sh)
+    R = int(rmax)
+    cut = lambda a: np.roll(np.roll(a, R, 0), R, 1)[:2 * R + 1, :2 * R + 1]
+    ac, cnt = cut(ac), cut(cnt)
+    yy, xx = np.mgrid[-R:R + 1, -R:R + 1]
+    ring = np.rint(np.hypot(yy, xx)).astype(int)
+    prof = (np.bincount(ring.ravel(), ac.ravel())[:R]
+            / np.maximum(np.bincount(ring.ravel(), cnt.ravel())[:R], 1e-9))
+    below = np.flatnonzero(prof < 0.5)
+    if not len(below):
+        return float(R * PX_M)
+    k = int(below[0])
+    if k == 0:
+        return 0.0
+    return float(((k - 1) + (prof[k - 1] - 0.5)
+                  / max(prof[k - 1] - prof[k], 1e-9)) * PX_M)
+
+
 def main():
     import time
     from experiments.baseline import generate
